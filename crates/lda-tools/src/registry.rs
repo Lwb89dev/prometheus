@@ -59,6 +59,10 @@ impl ToolRegistry {
     pub fn names(&self) -> Vec<&'static str> {
         self.tools.iter().map(|tool| tool.spec().name).collect()
     }
+
+    pub fn append(&mut self, extra: Vec<Arc<dyn Tool>>) {
+        self.tools.extend(extra);
+    }
 }
 
 pub fn prepare_call(tool: &dyn Tool, arguments: &Value) -> Result<()> {

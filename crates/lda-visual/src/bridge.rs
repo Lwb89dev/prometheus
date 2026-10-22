@@ -36,6 +36,10 @@ impl EntityModel {
                     now,
                 ),
             DaemonVisualEvent::Event(StreamEvent::ReplaceText { .. }) => {}
+            DaemonVisualEvent::Event(StreamEvent::Sources { .. }) => {}
+            DaemonVisualEvent::Event(StreamEvent::Confirmation { .. }) => {
+                self.dispatch(EntityEvent::RequestStarted, now)
+            }
             DaemonVisualEvent::Done { status, error } => match status {
                 "ok" => self.dispatch(EntityEvent::RequestSucceeded, now),
                 "cancelled" => self.dispatch(EntityEvent::RequestCancelled, now),

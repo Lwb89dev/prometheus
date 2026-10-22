@@ -76,6 +76,14 @@ enum Commands {
         #[arg(short, long, default_value = "")]
         provider: String,
     },
+    /// List notes the user explicitly saved.
+    Memories,
+    /// Store one note. Persistent memory must be enabled in the configuration.
+    Remember { text: String },
+    /// Delete one saved note by id.
+    Forget { id: String },
+    /// Reread the configuration file.
+    Reload,
 }
 
 #[tokio::main]
@@ -115,6 +123,12 @@ async fn dispatch(cli: Cli) -> Result<()> {
         Commands::Models { provider } => {
             print_json(&proxy().await?.list_models(&provider).await.map_err(ipc)?)
         }
+        Commands::Memories => print_json(&proxy().await?.list_memories().await.map_err(ipc)?),
+        Commands::Remember { text } => {
+            print_json(&proxy().await?.remember(&text).await.map_err(ipc)?)
+        }
+        Commands::Forget { id } => proxy().await?.forget_memory(&id).await.map_err(ipc),
+        Commands::Reload => proxy().await?.reload_config().await.map_err(ipc),
     }
 }
 
@@ -160,7 +174,7 @@ async fn chat(message: &str, conversation: &str, provider: &str) -> Result<()> {
                 false
             }
             item = events.next() => {
-                show_event(item, &reply.request_id)?;
+                show_event(item, &reply.request_id, &proxy).await?;
                 false
             }
             item = dones.next() => show_done(item, &reply.request_id)?,
@@ -184,7 +198,11 @@ fn show_delta(item: Option<StreamDelta>, request_id: &str) -> Result<()> {
     Ok(())
 }
 
-fn show_event(item: Option<BusStreamEvent>, request_id: &str) -> Result<()> {
+async fn show_event(
+    item: Option<BusStreamEvent>,
+    request_id: &str,
+    proxy: &AgentProxy<'_>,
+) -> Result<()> {
     let Some(message) = item else {
         return Err(Error::Ipc("event stream ended".into()));
     };
@@ -201,8 +219,51 @@ fn show_event(item: Option<BusStreamEvent>, request_id: &str) -> Result<()> {
             println!("\n{text}");
             io::stdout().flush()?;
         }
+        StreamEvent::Sources { items } => {
+            eprintln!("\nsources:");
+            for item in items {
+                eprintln!("- {} ({})", item.title, item.url);
+            }
+        }
+        StreamEvent::Confirmation {
+            call_id,
+            name,
+            summary,
+        } => {
+            eprintln!("\nconfirm {name}: {summary}");
+            let allow = confirm_on_tty().await;
+            proxy
+                .confirm_action(request_id, &call_id, allow)
+                .await
+                .map_err(ipc)?;
+            if allow {
+                eprintln!("allowed");
+            } else {
+                eprintln!("denied");
+            }
+        }
     }
     Ok(())
+}
+
+async fn confirm_on_tty() -> bool {
+    let joined = tokio::task::spawn_blocking(read_yes).await;
+    joined.unwrap_or(false)
+}
+
+fn read_yes() -> bool {
+    use std::io::IsTerminal;
+    if !std::io::stdin().is_terminal() {
+        eprintln!("not a terminal; denying the action");
+        return false;
+    }
+    eprint!("allow? [y/N] ");
+    let _ = io::stderr().flush();
+    let mut line = String::new();
+    if io::stdin().read_line(&mut line).is_err() {
+        return false;
+    }
+    matches!(line.trim(), "y" | "Y" | "yes")
 }
 
 fn show_done(item: Option<StreamDone>, request_id: &str) -> Result<bool> {

@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use futures_util::StreamExt;
 use lda_common::{
-    private_dir, xdg_data_dir, ConversationSummary, ProviderConfig, SendReply, StoredMessage,
-    StreamEvent,
+    private_dir, xdg_data_dir, ConversationSummary, MemoryNote, ProviderConfig, SendReply,
+    StoredMessage, StreamEvent,
 };
 use lda_ipc::{session_proxy, AgentProxy, BusStreamEvent, StreamDelta, StreamDone};
 
@@ -54,6 +54,15 @@ pub enum Command {
         id: String,
     },
     Shutdown,
+    Confirm {
+        request_id: String,
+        call_id: String,
+        allow: bool,
+    },
+    ListMemories,
+    ForgetMemory {
+        id: String,
+    },
 }
 
 pub enum UiMsg {
@@ -90,6 +99,7 @@ pub enum UiMsg {
     },
     DeletedAll,
     ShutdownDone,
+    Memories(Vec<MemoryNote>),
 }
 
 pub async fn run(
@@ -207,6 +217,28 @@ async fn handle_command(proxy: &AgentProxy<'_>, ui: &async_channel::Sender<UiMsg
             let _ = proxy.shutdown().await;
             let _ = ui.send(UiMsg::ShutdownDone).await;
         }
+        Command::Confirm {
+            request_id,
+            call_id,
+            allow,
+        } => {
+            let note = if allow {
+                "Action allowed."
+            } else {
+                "Action denied."
+            };
+            send_unit(
+                ui,
+                proxy.confirm_action(&request_id, &call_id, allow).await,
+                note,
+            )
+            .await;
+        }
+        Command::ListMemories => list_memories(proxy, ui).await,
+        Command::ForgetMemory { id } => {
+            send_unit(ui, proxy.forget_memory(&id).await, "Note deleted.").await;
+            list_memories(proxy, ui).await;
+        }
     }
 }
 
@@ -315,6 +347,24 @@ async fn list_providers(proxy: &AgentProxy<'_>, ui: &async_channel::Sender<UiMsg
     match serde_json::from_str::<Vec<ProviderConfig>>(&raw) {
         Ok(providers) => {
             let _ = ui.send(UiMsg::Providers(providers)).await;
+        }
+        Err(err) => {
+            let _ = ui.send(UiMsg::Status(err.to_string())).await;
+        }
+    }
+}
+
+async fn list_memories(proxy: &AgentProxy<'_>, ui: &async_channel::Sender<UiMsg>) {
+    let raw = match proxy.list_memories().await {
+        Ok(raw) => raw,
+        Err(err) => {
+            let _ = ui.send(UiMsg::Status(err.to_string())).await;
+            return;
+        }
+    };
+    match serde_json::from_str::<Vec<MemoryNote>>(&raw) {
+        Ok(notes) => {
+            let _ = ui.send(UiMsg::Memories(notes)).await;
         }
         Err(err) => {
             let _ = ui.send(UiMsg::Status(err.to_string())).await;

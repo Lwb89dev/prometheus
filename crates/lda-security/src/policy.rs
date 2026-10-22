@@ -23,17 +23,48 @@ impl Default for PermissionPolicy {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Decision {
+    Allow,
+    Confirm,
+    Deny,
+}
+
 impl PermissionPolicy {
-    pub fn allows(&self, level: PermissionLevel, confirmation: ConfirmationPolicy) -> bool {
-        if matches!(confirmation, ConfirmationPolicy::Deny) {
-            return false;
+    /// Daemon policy: read-only tools run, user actions wait for a person.
+    /// System changes and destructive tools stay off. There is no polkit helper.
+    pub fn daemon() -> Self {
+        Self {
+            allow_read_only: true,
+            allow_user_action: true,
+            allow_system_modification: false,
+            allow_destructive: false,
         }
-        match level {
+    }
+
+    pub fn decide(&self, level: PermissionLevel, confirmation: ConfirmationPolicy) -> Decision {
+        if matches!(confirmation, ConfirmationPolicy::Deny) {
+            return Decision::Deny;
+        }
+        let enabled = match level {
             PermissionLevel::ReadOnly => self.allow_read_only,
             PermissionLevel::UserAction => self.allow_user_action,
             PermissionLevel::SystemModification => self.allow_system_modification,
             PermissionLevel::Destructive => self.allow_destructive,
+        };
+        if !enabled {
+            return Decision::Deny;
         }
+        if matches!(confirmation, ConfirmationPolicy::Always)
+            && !matches!(level, PermissionLevel::ReadOnly)
+        {
+            return Decision::Confirm;
+        }
+        Decision::Allow
+    }
+
+    pub fn allows(&self, level: PermissionLevel, confirmation: ConfirmationPolicy) -> bool {
+        !matches!(self.decide(level, confirmation), Decision::Deny)
     }
 }
 
@@ -51,6 +82,21 @@ mod tests {
             ConfirmationPolicy::Always
         ));
         assert!(!policy.allows(PermissionLevel::Destructive, ConfirmationPolicy::Always));
+    }
+
+    #[test]
+    fn user_action_waits_for_confirmation() {
+        let policy = PermissionPolicy::daemon();
+        assert_eq!(
+            policy.decide(PermissionLevel::UserAction, ConfirmationPolicy::Always),
+            Decision::Confirm
+        );
+        assert_eq!(
+            policy.decide(PermissionLevel::ReadOnly, ConfirmationPolicy::Always),
+            Decision::Allow
+        );
+        let destructive = policy.decide(PermissionLevel::Destructive, ConfirmationPolicy::Always);
+        assert_eq!(destructive, Decision::Deny);
     }
 
     #[test]

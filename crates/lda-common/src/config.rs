@@ -9,6 +9,8 @@ pub const DEFAULT_OLLAMA_ENDPOINT: &str = "http://127.0.0.1:11434";
 pub enum ProviderKind {
     Ollama,
     OpenaiCompatible,
+    Anthropic,
+    Xai,
 }
 
 impl ProviderKind {
@@ -16,8 +18,24 @@ impl ProviderKind {
         match self {
             ProviderKind::Ollama => "ollama",
             ProviderKind::OpenaiCompatible => "openai_compatible",
+            ProviderKind::Anthropic => "anthropic",
+            ProviderKind::Xai => "xai",
         }
     }
+}
+
+/// Where web search is allowed to send a query.
+///
+/// `searxng` is for an instance you run. A remote SearXNG host is rejected
+/// unless `allow_remote_search` is set. `json` is for an API whose response
+/// uses the same `results` array. There is no default public endpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum WebProviderKind {
+    #[default]
+    None,
+    Searxng,
+    Json,
 }
 
 /// How tool calls are requested from the model.
@@ -91,6 +109,9 @@ pub struct AgentSettings {
     /// Delete conversations older than this many days on startup. `None` keeps them.
     #[serde(default)]
     pub retention_days: Option<u32>,
+    /// User-saved notes. The assistant does not invent these.
+    #[serde(default)]
+    pub persistent_memory: bool,
 }
 
 impl Default for AgentSettings {
@@ -100,6 +121,60 @@ impl Default for AgentSettings {
             tool_timeout_secs: default_tool_timeout(),
             persist_conversations: true,
             retention_days: None,
+            persistent_memory: false,
+        }
+    }
+}
+
+fn default_web_results() -> u8 {
+    5
+}
+
+fn default_web_timeout() -> u64 {
+    20
+}
+
+fn default_web_interval() -> u64 {
+    2_000
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct WebSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub kind: WebProviderKind,
+    #[serde(default)]
+    pub endpoint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_env: Option<String>,
+    #[serde(default = "default_web_results")]
+    pub max_results: u8,
+    #[serde(default = "default_web_timeout")]
+    pub timeout_secs: u64,
+    #[serde(default = "default_web_interval")]
+    pub min_interval_ms: u64,
+    /// Lets SearXNG point at a non-loopback host. Off by default.
+    #[serde(default)]
+    pub allow_remote_search: bool,
+    /// Lets page fetch contact private and loopback addresses. Off by default.
+    #[serde(default)]
+    pub allow_private_fetch: bool,
+}
+
+impl Default for WebSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            kind: WebProviderKind::None,
+            endpoint: String::new(),
+            auth_env: None,
+            max_results: default_web_results(),
+            timeout_secs: default_web_timeout(),
+            min_interval_ms: default_web_interval(),
+            allow_remote_search: false,
+            allow_private_fetch: false,
         }
     }
 }
@@ -110,6 +185,8 @@ pub struct FileConfig {
     #[serde(default)]
     pub agent: AgentSettings,
     #[serde(default)]
+    pub web: WebSettings,
+    #[serde(default)]
     pub providers: Vec<ProviderConfig>,
 }
 
@@ -117,6 +194,7 @@ impl Default for FileConfig {
     fn default() -> Self {
         Self {
             agent: AgentSettings::default(),
+            web: WebSettings::default(),
             providers: vec![ProviderConfig {
                 id: "ollama".to_string(),
                 kind: ProviderKind::Ollama,
@@ -146,6 +224,7 @@ impl FileConfig {
                 "max_tool_iterations must be between 1 and 16".into(),
             ));
         }
+        validate_web(&config.web)?;
         Ok(config)
     }
 
@@ -225,6 +304,50 @@ fn provider_id_byte(byte: u8) -> bool {
     byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_' || byte == b'-'
 }
 
+pub fn validate_web(web: &WebSettings) -> Result<()> {
+    if web.max_results == 0 || web.max_results > 8 {
+        return Err(Error::InvalidInput(
+            "web.max_results must be between 1 and 8".into(),
+        ));
+    }
+    if web.timeout_secs == 0 || web.timeout_secs > 60 {
+        return Err(Error::InvalidInput(
+            "web.timeout_secs must be between 1 and 60".into(),
+        ));
+    }
+    if web.min_interval_ms > 60_000 {
+        return Err(Error::InvalidInput(
+            "web.min_interval_ms must be at most 60000".into(),
+        ));
+    }
+    if let Some(name) = &web.auth_env {
+        if !valid_env_name(name) {
+            return Err(Error::InvalidInput(
+                "web.auth_env is not an environment variable name".into(),
+            ));
+        }
+    }
+    if !web.enabled {
+        return Ok(());
+    }
+    if matches!(web.kind, WebProviderKind::None) {
+        return Err(Error::InvalidInput(
+            "web.kind must be searxng or json when web search is enabled".into(),
+        ));
+    }
+    let url = crate::endpoint::parse_endpoint(&web.endpoint)?;
+    if matches!(web.kind, WebProviderKind::Searxng)
+        && !web.allow_remote_search
+        && !crate::endpoint::endpoint_is_local(&web.endpoint)
+    {
+        return Err(Error::InvalidInput(
+            "SearXNG must be a loopback instance unless allow_remote_search is true".into(),
+        ));
+    }
+    let _ = url;
+    Ok(())
+}
+
 fn valid_env_name(name: &str) -> bool {
     let mut chars = name.chars();
     let Some(first) = chars.next() else {
@@ -275,5 +398,23 @@ mod tests {
             model = "mistral:latest"
         "#;
         assert!(FileConfig::parse(text).is_err());
+    }
+
+    #[test]
+    fn searxng_must_be_local_unless_opted_in() {
+        let remote = r#"
+            [web]
+            enabled = true
+            kind = "searxng"
+            endpoint = "https://searx.example/search"
+        "#;
+        assert!(FileConfig::parse(remote).is_err());
+        let local = r#"
+            [web]
+            enabled = true
+            kind = "searxng"
+            endpoint = "http://127.0.0.1:8080"
+        "#;
+        assert!(FileConfig::parse(local).is_ok());
     }
 }

@@ -1,10 +1,12 @@
 //! Provider adapters. The agent loop depends on [`LlmProvider`], not on a vendor.
 //!
-//! Ollama and OpenAI-compatible HTTP are implemented. Adding a provider means
-//! a new type that implements the trait and a match arm in [`build_provider`].
+//! Ollama, OpenAI-compatible HTTP, xAI (OpenAI-compatible), and Anthropic are
+//! implemented. Adding a provider means a new type that implements the trait
+//! and a match arm in [`build_provider`].
 
 #![forbid(unsafe_code)]
 
+mod anthropic;
 mod delta;
 mod http;
 mod ollama;

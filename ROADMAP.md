@@ -1,48 +1,45 @@
 # Roadmap
 
-Milestone 0 and Milestone 1 are the current tree: workspace, security
-boundaries, daemon, GTK conversation window, Ollama, OpenAI-compatible
-streaming, SQLite, read-only system tools, and session-bus IPC.
+Version 0.2.0 contains Milestones 0 through 5 as working code, with the limits
+named in each section. A feature that was not run on a desktop is not described
+as supported there.
 
-Later milestones stay out of the tree until they are real.
+## Milestone 0 and 1
+
+Workspace, security boundaries, unprivileged daemon, GTK conversation window,
+Ollama and OpenAI-compatible streaming, SQLite, read-only system tools, and
+session-bus IPC. Tagged `v0.1.0`.
 
 ## Milestone 2 — Agent capabilities
 
-- Web search behind a configured SearXNG you run yourself, or another API you
-  configure. Do not call public SearXNG instances.
-- Fetch and extract page text with timeouts, size caps, and rate limits.
-- Treat page text as untrusted. Never execute instructions found in it.
-- Show source links separately from model prose.
-- Keep tool runs in the existing audit table.
+In the tree: SearXNG or a JSON `results` endpoint you configure, HTML
+extraction with timeouts, size caps, and a rate limit, untrusted page text,
+and a source list in the window. Tool runs stay in the audit table. Search is
+disabled until `[web]` enables it, and a public SearXNG is not the default.
 
 ## Milestone 3 — Desktop integration
 
-- Global shortcut where a portal or a tested desktop mechanism exists.
-  Suggested default Super+Space only when it is free.
-- Floating widget only where layer-shell or a documented equivalent exists.
-  Otherwise keep the current window.
-- COSMIC and GNOME adapters, tested on those sessions.
-- Notifications through the notification portal.
-- Document Wayland limits in the adapter, not as a blanket claim.
+In the tree: portal capability flags, `AddNotification`, and `OpenURI`.
+The notification call returned success once on this COSMIC Wayland session.
+GlobalShortcuts is reported when the interface exists and is not registered
+here. Layer-shell is reported only when `gtk4-layer-shell-0` is installed.
+Otherwise the mark stays in a normal GTK window. KDE and XFCE were not run.
 
 ## Milestone 4 — More hosts and actions
 
-- KDE Plasma and XFCE adapters, after they are tested.
-- Anthropic and xAI adapters on the same `LlmProvider` trait.
-- User-confirmed actions above read-only, with the action shown before it runs.
-- Polkit only through a narrow helper. The daemon stays unprivileged.
-- Optional persistent memories that the user can see and delete. Do not infer
-  them silently.
-- Voice trait, local, push-to-talk, off by default.
-- Packaging: `.deb` and RPM. Flatpak only if the sandbox still explains which
-  diagnostics it cannot do. Do not weaken the sandbox quietly.
+In the tree: Anthropic and xAI on `LlmProvider`, confirmed user actions,
+explicit memories, and `NoVoice`. There is no polkit helper. Packaging recipes
+are `packaging/deb/build.sh`, `packaging/rpm/lda.spec`, and
+`packaging/flatpak/org.linuxdesktopagent.Gtk.yml`. The Flatpak manifest does
+not grant host filesystem access. See `DEVELOPMENT.md` for which of those
+recipes were executed.
 
 ## Milestone 5 — Stabilization
 
-- Permission and path tests kept in CI.
-- Accessibility pass on the GTK window.
-- Cross-desktop notes in `DEVELOPMENT.md` that say what was actually run.
-- No invented performance numbers. Measure before writing any.
+Permission, path, web, and confirmation tests stay in `cargo test`. The GTK
+transcript, message box, search field, and source list have accessible names.
+Orca was not run. The startup measurement and the desktops that were not run
+are in `DEVELOPMENT.md`.
 
 ## Decisions still open
 

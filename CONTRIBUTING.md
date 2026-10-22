@@ -16,10 +16,12 @@ The project forbids `unsafe` in its own crates. Keep that.
 
 1. Implement the collection in `lda-system` if it reads the machine. Prefer
    `/proc`, `/sys`, or D-Bus over parsing human-oriented command output.
-2. Add a `ToolSpec` in `crates/lda-tools/src/system.rs` through `system_registry`,
-   or register another `Tool` on the same registry.
+2. Add a `ToolSpec` in `crates/lda-tools`. Read-only system tools go through
+   `system_registry`. Web and confirmed actions are added in `agent_registry`,
+   which the daemon uses. The CLI keeps the read-only registry.
 3. Set the permission, risk, timeout, and confirmation policy. Read-only tools
    use `PermissionLevel::ReadOnly`, `Risk::Low`, and `ConfirmationPolicy::Never`.
+   A user action uses `PermissionLevel::UserAction` and `ConfirmationPolicy::Always`.
 4. Give the parameters a JSON schema. `validate_arguments` checks a subset:
    object shape, required fields, types, and simple numeric bounds.
 5. Cap the output. Do not include secrets, process environments, or command lines.
@@ -45,19 +47,19 @@ to change `lda-core` for a new read-only tool.
 7. Leave `lda-core` on the `LlmProvider` trait. The loop should not gain a
    match on the vendor.
 
-## Add a desktop adapter
+## Add a desktop capability
 
-Do this when you can test the desktop, not before.
+`lda-desktop` already probes the session portal. Extend that crate when you
+can test the desktop, not before.
 
-1. Introduce `DesktopEnvironmentAdapter` in a crate that the daemon or the GTK
-   app can select at runtime.
-2. Detect capabilities. A method that the session cannot do must return a
-   clear unsupported error. Do not assume an X11 feature exists on Wayland.
-3. Global shortcuts go through a portal or a documented desktop mechanism.
-   Do not override an existing shortcut. If none is available, document the
-   fallback (launch `lda-gtk` from the menu or a terminal).
-4. A floating widget that needs layer-shell or an equivalent should live in
-   the adapter. The current `EntityWidget` is only the drawing and the state.
+1. Detect the capability from introspection or from a library check. A missing
+   interface stays false. Do not register Super+Space unless GlobalShortcuts
+   is present and you have checked that the shortcut is free.
+2. Do not assume an X11 feature exists on Wayland. Do not treat COSMIC as GNOME.
+3. A floating widget that needs layer-shell should use the real library.
+   `EntityWidget` remains the drawing and the state.
+4. Voice capture implements `VoiceBackend`. Leave `NoVoice` as the default
+   until a local engine exists, and do not open a microphone at startup.
 5. Write down what you ran and what you did not run in `DEVELOPMENT.md`.
    Untested integration is not a supported feature.
 

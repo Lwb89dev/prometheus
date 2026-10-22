@@ -11,15 +11,16 @@ use async_trait::async_trait;
 use lda_common::{
     config::valid_provider_id, endpoint_is_local, new_id, now_ms, private_dir,
     read_to_string_limited, tighten_file, title_from, ConversationSummary, Error, FileConfig,
-    Message, ProviderConfig, ProviderKind, Result, Role, SendReply, StoredMessage, StreamEvent,
-    ToolRunRecord, MAX_SECRET_CHARS, MAX_USER_CHARS,
+    Message, ProviderConfig, ProviderKind, Result, Role, SendReply, SourceLink, StoredMessage,
+    StreamEvent, ToolRunRecord, MAX_SECRET_CHARS, MAX_USER_CHARS,
 };
-use lda_core::{run_turn, AgentEvent, AgentLimits};
+use lda_core::{run_turn, AgentEvent, AgentLimits, ConfirmHub, TurnRequest};
 use lda_ipc::{AgentBackend, SignalBus};
 use lda_llm::build_provider;
-use lda_memory::{history_for_model, Store};
+use lda_memory::{history_for_model, MemoryGate, Store};
 use lda_security::{preview, resolve_api_key, PermissionPolicy, SecretStore};
-use lda_tools::{system_registry, ToolRegistry};
+use lda_tools::{agent_registry, ToolRegistry};
+use lda_web::WebClient;
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::Notify;
@@ -32,13 +33,16 @@ pub struct Service {
     this: Weak<Service>,
     config_path: PathBuf,
     config: Mutex<FileConfig>,
-    store: Mutex<Store>,
+    store: Arc<Mutex<Store>>,
     ephemeral: Mutex<Ephemeral>,
     secrets: Arc<dyn SecretStore>,
     http: reqwest::Client,
     http_local: reqwest::Client,
     registry: ToolRegistry,
     policy: PermissionPolicy,
+    web: Arc<WebClient>,
+    memory: Arc<MemoryGate>,
+    confirm: Arc<ConfirmHub>,
     inflight: Mutex<HashMap<String, CancellationToken>>,
     root: CancellationToken,
     signals: SignalBus,
@@ -74,15 +78,23 @@ impl Service {
         for provider in &config.providers {
             warn_if_remote(provider);
         }
-        let store = Store::open(&Store::path_of(&data_dir))?;
-        apply_retention(&store, &config.agent)?;
+        let store = Arc::new(Mutex::new(Store::open(&Store::path_of(&data_dir))?));
+        {
+            let guard = lock(&store)?;
+            apply_retention(&guard, &config.agent)?;
+        }
+        let memory = Arc::new(MemoryGate::new(
+            Arc::clone(&store),
+            config.agent.persistent_memory,
+        ));
+        let web = Arc::new(WebClient::new(config.web.clone())?);
         let http = build_http(false)?;
         let http_local = build_http(true)?;
         let service = Arc::new_cyclic(|this| Self {
             this: this.clone(),
             config_path,
             config: Mutex::new(config),
-            store: Mutex::new(store),
+            store,
             ephemeral: Mutex::new(Ephemeral {
                 messages: HashMap::new(),
                 summaries: HashMap::new(),
@@ -90,8 +102,11 @@ impl Service {
             secrets,
             http,
             http_local,
-            registry: system_registry(),
-            policy: PermissionPolicy::default(),
+            registry: agent_registry(Arc::clone(&web), Arc::clone(&memory)),
+            policy: PermissionPolicy::daemon(),
+            web,
+            memory,
+            confirm: Arc::new(ConfirmHub::new()),
             inflight: Mutex::new(HashMap::new()),
             root: CancellationToken::new(),
             signals: SignalBus::default(),
@@ -303,7 +318,8 @@ impl Service {
         let history = self.history(&conversation_id, provider_cfg.context_messages)?;
         let key = self.api_key(&provider_cfg)?;
         let provider = build_provider(&provider_cfg, self.client_for(&provider_cfg), key);
-        let mut rx = run_turn(lda_core::TurnRequest {
+        let memories = self.memory.notes_for_prompt();
+        let mut rx = run_turn(TurnRequest {
             provider,
             provider_cfg,
             registry: self.registry.clone(),
@@ -313,6 +329,9 @@ impl Service {
             cancel,
             conversation_id: conversation_id.clone(),
             request_id: request_id.clone(),
+            confirm: Arc::clone(&self.confirm),
+            memories,
+            confirm_wait: Duration::from_secs(120),
         })
         .await;
         let mut accumulated = String::new();
@@ -618,12 +637,34 @@ impl AgentBackend for Service {
         for provider in &config.providers {
             warn_if_remote(provider);
         }
+        self.web.set_settings(config.web.clone()).await;
+        self.memory.set_enabled(config.agent.persistent_memory);
         *lock(&self.config)? = config;
         Ok(())
     }
 
     async fn export_data(&self) -> Result<String> {
         self.export_json()
+    }
+
+    async fn confirm_action(&self, request_id: &str, call_id: &str, allow: bool) -> Result<()> {
+        let key = confirm_key(request_id, call_id)?;
+        if self.confirm.decide(&key, allow) {
+            return Ok(());
+        }
+        Err(Error::NotFound("no confirmation is waiting".into()))
+    }
+
+    async fn list_memories(&self) -> Result<String> {
+        to_json(&self.memory.list()?)
+    }
+
+    async fn remember(&self, text: &str) -> Result<String> {
+        to_json(&self.memory.remember(text)?)
+    }
+
+    async fn forget_memory(&self, id: &str) -> Result<()> {
+        self.memory.forget(id)
     }
 }
 
@@ -669,11 +710,84 @@ async fn publish_tool(
     event: StreamEvent,
     record: Option<ToolRunRecord>,
 ) -> Result<bool> {
-    if let Some(record) = record {
-        service.record(&record);
+    if let Some(record) = &record {
+        service.record(record);
+        let links = source_links(record.result_json.as_deref());
+        if !links.is_empty() {
+            service
+                .signals
+                .event(request_id, &StreamEvent::Sources { items: links })
+                .await;
+        }
     }
+    notify_confirmation(&event).await;
     service.signals.event(request_id, &event).await;
     Ok(false)
+}
+
+async fn notify_confirmation(event: &StreamEvent) {
+    let StreamEvent::Confirmation { name, summary, .. } = event else {
+        return;
+    };
+    let body = format!("{name}: {summary}");
+    if let Err(err) = lda_desktop::notify("Confirm an action", &body).await {
+        warn!(%err, "confirmation notification was not shown");
+    }
+}
+
+fn source_links(result_json: Option<&str>) -> Vec<SourceLink> {
+    let Some(text) = result_json else {
+        return Vec::new();
+    };
+    let Ok(value) = serde_json::from_str::<Value>(text) else {
+        return Vec::new();
+    };
+    let Some(items) = value.get("sources").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut links = Vec::new();
+    for item in items {
+        let Some(link) = one_source(item) else {
+            continue;
+        };
+        links.push(link);
+        if links.len() == 8 {
+            break;
+        }
+    }
+    links
+}
+
+fn one_source(item: &Value) -> Option<SourceLink> {
+    let url = item.get("url")?.as_str()?;
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return None;
+    }
+    if url.chars().count() > 2_000 {
+        return None;
+    }
+    let title = item.get("title").and_then(Value::as_str).unwrap_or(url);
+    let kind = item
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or("snippet");
+    let kind = if kind == "page" { "page" } else { "snippet" };
+    Some(SourceLink {
+        title: preview(title, 180),
+        url: url.to_string(),
+        kind: kind.to_string(),
+    })
+}
+
+fn confirm_key(request_id: &str, call_id: &str) -> Result<String> {
+    if !plain_id(request_id) || !plain_id(call_id) {
+        return Err(Error::InvalidInput("confirmation id is not valid".into()));
+    }
+    Ok(format!("{request_id}:{call_id}"))
+}
+
+fn plain_id(id: &str) -> bool {
+    (1..=160).contains(&id.len()) && id.chars().all(|ch| ch.is_ascii() && !ch.is_ascii_control())
 }
 
 fn remember(ephemeral: &Mutex<Ephemeral>, message: StoredMessage) -> Result<()> {
@@ -869,7 +983,7 @@ fn build_http(local_only: bool) -> Result<reqwest::Client> {
     let mut builder = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(5))
         .redirect(reqwest::redirect::Policy::limited(2))
-        .user_agent("linux-desktop-agent/0.1");
+        .user_agent("linux-desktop-agent/0.2");
     if local_only {
         builder = builder.no_proxy();
     }
@@ -913,5 +1027,18 @@ mod tests {
             .await
             .is_err());
         assert!(service.send_message("", "ollama", "   ").await.is_err());
+        assert!(service
+            .remember("The printer is on the desk.")
+            .await
+            .is_err());
+        assert!(service
+            .confirm_action("request", "call", true)
+            .await
+            .is_err());
+        let links = source_links(Some(
+            r#"{"sources":[{"title":"Docs","url":"https://example.com/a","kind":"snippet"},{"title":"x","url":"file:///etc/passwd","kind":"page"}]}"#,
+        ));
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].url, "https://example.com/a");
     }
 }

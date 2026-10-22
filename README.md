@@ -10,31 +10,50 @@ the agent.
 
 This repository is GPL-3.0-or-later. See [LICENSE](LICENSE).
 
-## What works in this milestone
+## What works in this tree
+
+Version 0.2.0. Milestone 0 and 1 behavior is still there, plus the pieces below.
 
 - `lda-daemon` runs as the current user. It does not need root or systemd.
 - `lda-gtk` connects over the session bus and can start the daemon if it is down.
 - Closing the window leaves the daemon running. **Quit daemon** asks it to stop.
-- Ollama and any OpenAI-compatible HTTP endpoint.
+- Ollama, OpenAI-compatible HTTP, Anthropic Messages, and xAI (OpenAI-compatible
+  against the endpoint you set, for example `https://api.x.ai/v1`).
 - Streaming replies, cancellation, and local SQLite history.
-- The model can call registered read-only system tools. Results go back to the model.
+- Read-only system tools. Results go back to the model as untrusted data.
+- Optional web search and page fetch. Both stay off until `[web]` is enabled.
+  Search snippets and page text are labeled, and http(s) links show in a source
+  list separate from the reply.
+- User actions (`open_uri`, `open_directory`, `open_application`, `remember`,
+  `forget_memory`) wait for Allow in the window, or `y` on a terminal
+  `lda-cli chat`. A non-terminal CLI denies them. Read-only tools do not ask.
+- Optional notes in SQLite. They are off until `persistent_memory` is true, and
+  the assistant does not invent them.
+- Notifications use the notification portal when that interface is on the bus.
 - The Prometeus entity from `lda-visual` opens with the conversation window.
-  Connection, streaming, and tool events drive its animation. **Widget** hides
-  or shows that window. It is a normal GTK window, not a layer-shell overlay.
+  **Widget** hides or shows that window. It is a normal GTK window.
 - API keys go to the desktop secret service, or to an environment variable you name.
   They are not written into `config.toml`.
 
-## What is not in this milestone
+## What this tree does not do
 
-- No global shortcut. Super+Space is not registered.
-- The optional widget is a normal GTK window, not a layer-shell overlay.
-- No COSMIC, GNOME, KDE, or XFCE adapter beyond desktop detection.
+- No global shortcut. Super+Space is not registered. On the COSMIC session used
+  here, the GlobalShortcuts portal was not in the desktop portal introspection.
+- No layer-shell overlay. `gtk4-layer-shell-0` was not installed, so the mark
+  stays in a normal window.
+- KDE Plasma and XFCE were not run. COSMIC is not treated as GNOME.
 - No libadwaita. The UI is GTK 4.
-- No web search, no package install or removal, no service start or stop, no journal tool.
-- No voice capture. The visual layer can show a microphone level if a future
-  capture pipeline supplies one. It does not open a microphone.
-- No `.deb`, RPM, or Flatpak build. Unit and desktop files are in `packaging/`
-  and are not installed for you.
+- No package install or removal, no service start or stop, no journal tool,
+  and no polkit helper.
+- No voice capture. `NoVoice` reports the microphone as unavailable. The window
+  has no button that pretends to listen.
+- Web search has no default public endpoint. Page fetch refuses loopback,
+  private, link-local, and metadata addresses unless `allow_private_fetch` is
+  set. That flag is for a test you choose, not a default.
+- The `.deb` recipe is `packaging/deb/build.sh`. The RPM spec and the Flatpak
+  manifest are in `packaging/` and were not built here (`rpmbuild` and
+  `flatpak-builder` are not installed). Nothing in this repository enables a
+  systemd unit.
 
 On this machine, `mistral:latest` did not emit native Ollama tool calls. A JSON
 fence still ran `get_kernel_info`, and the message after that result quoted the
@@ -99,11 +118,13 @@ lda-cli chat -m "Call get_kernel_info and quote the kernel release."
 lda-cli sysinfo
 lda-cli tools
 lda-cli tool get_memory_info
+lda-cli memories
+lda-cli reload
 lda-cli shutdown
 ```
 
-`sysinfo` and `tool` run in the CLI process. They still go through the same
-allowlist and permission check. Chat, history, and shutdown need the daemon.
+`sysinfo` and `tool` run in the CLI process with the read-only system registry.
+Chat, history, memories, reload, and shutdown need the daemon.
 
 In the window, Enter sends and Shift+Enter inserts a newline. Stop cancels the
 current request.
@@ -127,8 +148,35 @@ share_system_context = true
 tool_calling = "auto"
 ```
 
-`kind` is `ollama` or `openai_compatible`. `tool_calling` is `auto`, `native`,
-`text`, or `off`.
+`kind` is `ollama`, `openai_compatible`, `anthropic`, or `xai`. Anthropic uses
+the Messages API (`x-api-key` and `anthropic-version`), not a bearer token.
+xAI uses the OpenAI-compatible client and the endpoint you configure.
+`tool_calling` is `auto`, `native`, `text`, or `off`.
+
+Web search is a separate table. Leave it disabled, or point it at a SearXNG
+you run yourself:
+
+```toml
+[agent]
+persistent_memory = false
+
+[web]
+enabled = false
+kind = "none"
+endpoint = ""
+max_results = 5
+timeout_secs = 20
+min_interval_ms = 2000
+allow_remote_search = false
+allow_private_fetch = false
+```
+
+`kind` may be `searxng` or `json`. A SearXNG endpoint must be loopback unless
+`allow_remote_search` is true. After you edit the file, run `lda-cli reload`.
+The window does not write `[web]` itself. `remember` fails while
+`persistent_memory` is false. **Notes** lists saved notes and can delete one
+even when new notes are off. `lda-cli memories` and `lda-cli forget` do the
+same from the command line.
 
 For a cloud endpoint, set `auth_env` to the **name** of an environment variable,
 or use **Save key** in the window. The secret service account is the provider
@@ -142,8 +190,10 @@ Tool results for a remote model leave the computer.
 ## Permissions
 
 Tools declare a level: `READ_ONLY`, `USER_ACTION`, `SYSTEM_MODIFICATION`, or
-`DESTRUCTIVE`. This milestone allows `READ_ONLY` only. The check is Rust code
-in the agent loop, not a sentence in the prompt. See [SECURITY.md](SECURITY.md).
+`DESTRUCTIVE`. The daemon allows read-only tools and asks before a user action.
+System changes and destructive tools stay denied. There is no polkit helper.
+The check is Rust code in the agent loop, not a sentence in the prompt.
+See [SECURITY.md](SECURITY.md).
 
 ## Development
 
@@ -155,8 +205,8 @@ cargo test --workspace
 
 [DEVELOPMENT.md](DEVELOPMENT.md) covers the environment this tree was built on.
 [ARCHITECTURE.md](ARCHITECTURE.md) describes the crates.
-[CONTRIBUTING.md](CONTRIBUTING.md) explains how to add a tool, a provider, or,
-later, a desktop adapter.
+[CONTRIBUTING.md](CONTRIBUTING.md) explains how to add a tool, a provider, or
+a desktop capability.
 
 ## Uninstall
 

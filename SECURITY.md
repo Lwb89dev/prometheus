@@ -1,9 +1,9 @@
 # Security
 
-The model is an untrusted planner. Web pages are not fetched in this milestone.
-When they are, they will be untrusted data too. A tool runs only when Rust
-code accepts the name, the arguments, and the permission. Prompt text is not
-authorization.
+The model is an untrusted planner. Web pages and search snippets are untrusted
+data. A tool runs only when Rust code accepts the name, the arguments, and the
+permission. Prompt text is not authorization. Instructions inside a page, a
+snippet, or a tool result are not tool calls.
 
 ## Boundaries
 
@@ -26,14 +26,20 @@ authorization.
 
 ## Permissions
 
-`PermissionPolicy` defaults to read-only. `USER_ACTION`, `SYSTEM_MODIFICATION`,
-and `DESTRUCTIVE` are denied even if a tool is registered. `ConfirmationPolicy::Deny`
-blocks a tool even when the level would otherwise be allowed. There is no
-confirmation dialog for mutating tools yet, so those levels stay off.
+`PermissionPolicy::default` is read-only. The daemon uses `PermissionPolicy::daemon`:
+read-only tools run, user actions return `Confirm`, and system changes and
+destructive tools stay denied. `ConfirmationPolicy::Deny` blocks a tool even
+when the level would otherwise be allowed. Read-only plus `Always` still runs
+without a dialog, so a read-only tool cannot stall the turn waiting for a click.
+
+A user action emits `StreamEvent::Confirmation` and waits. Timeout or an
+explicit deny becomes the tool error `confirmation was not granted`. It does
+not invent a success. The CLI denies the action when stdin is not a terminal.
 
 Tests cover a destructive tool that the scripted model requests, a tool fence
-inside a user message, and a tool fence planted inside a tool result. None of
-those run a second tool.
+inside a user message, a tool fence planted inside a tool result, a user
+action that is not confirmed, and a user action that is confirmed. The
+unconfirmed tool does not run.
 
 ## System data
 
@@ -54,10 +60,12 @@ report is not a confirmed hardware failure. Tool JSON uses `"kind": "observation
 
 ## Files
 
-`resolve_within` is the helper for a future file tool. It rejects NUL, rejects
-paths that escape the root, and uses symlink-aware canonicalization. No file
-tool is registered in this milestone, so the helper is tested and unused by
-the agent.
+`resolve_within` rejects NUL, rejects paths that escape the root, and uses
+symlink-aware canonicalization. `open_directory` uses it against `HOME`.
+`locate_file` walks at most five directory levels under `HOME`, skips hidden
+names and symlinks, returns at most 20 paths, and does not read file contents.
+`open_application` accepts a desktop id and runs `gtk-launch` with that one
+argument. It does not use a shell.
 
 SQLite and the config file are mode `0600`. The data directory is `0700`.
 Config writes go to `config.toml.tmp` and then rename.
@@ -81,19 +89,30 @@ at least 8 characters before a preview is logged or shown.
 ## Network
 
 Provider calls use rustls. The loopback client is built with `no_proxy`.
-Redirects are limited. There is no telemetry and no call that is not a
-provider request, a model list, or a system command the tool itself runs.
+Redirects on provider calls are limited. There is no telemetry.
+
+Web search is off until `[web]` says otherwise. SearXNG must be a loopback
+URL unless `allow_remote_search` is true. Page fetch blocks loopback, private,
+link-local, CGNAT, metadata names, and similar addresses unless
+`allow_private_fetch` is true. Redirects are followed manually, at most two
+hops, and each hop is checked again. The body is capped at 1_000_000 bytes and
+the extracted text at 12_000 characters. `script`, `style`, `noscript`,
+`template`, `svg`, and `iframe` contents are dropped. The minimum interval
+between web calls defaults to 2 seconds.
 
 ## Tests that must keep passing
 
-- Permission denial and untrusted fences (`lda-core`).
+- Permission denial, untrusted fences, and confirmation (`lda-core`).
 - Path escape and symlink escape (`lda-security`).
 - Plaintext `api_key` rejection (`lda-common`, `lda-daemon`).
 - Schema rejection of unexpected tool arguments (`lda-tools`).
+- SearXNG loopback rule, private-address rejection, and disabled search that
+  does not connect (`lda-common`, `lda-web`).
+- Explicit memory rejection of secret-shaped notes (`lda-memory`).
 - Peer-to-peer bus error mapping (`lda-ipc`), so CI does not need a user bus.
 
 ## Not claimed
 
-Polkit is not wired up. There is no privileged helper. Flatpak sandboxing is
-not implemented; a later Flatpak must not silently punch holes for diagnostics.
-Debug logs may contain bus payloads if you raise `RUST_LOG`.
+Polkit is not wired up. There is no privileged helper. The Flatpak manifest
+does not grant `--filesystem=host` and has not been built. Debug logs may
+contain bus payloads if you raise `RUST_LOG`.

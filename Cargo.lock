@@ -1352,7 +1352,7 @@ checksum = "20870f649af7073d53e38067b2a84312175d56ea15217e1b15bc83506ec50afb"
 
 [[package]]
 name = "lda-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "futures-util",
@@ -1369,7 +1369,7 @@ dependencies = [
 
 [[package]]
 name = "lda-common"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1381,7 +1381,7 @@ dependencies = [
 
 [[package]]
 name = "lda-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "lda-common",
@@ -1396,18 +1396,20 @@ dependencies = [
 
 [[package]]
 name = "lda-daemon"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "clap",
  "lda-common",
  "lda-core",
+ "lda-desktop",
  "lda-ipc",
  "lda-llm",
  "lda-memory",
  "lda-security",
  "lda-system",
  "lda-tools",
+ "lda-web",
  "reqwest",
  "serde",
  "serde_json",
@@ -1420,8 +1422,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "lda-desktop"
+version = "0.2.0"
+dependencies = [
+ "lda-common",
+ "lda-system",
+ "tokio",
+ "zbus",
+]
+
+[[package]]
 name = "lda-gtk"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-channel",
  "clap",
@@ -1438,7 +1450,7 @@ dependencies = [
 
 [[package]]
 name = "lda-ipc"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -1451,7 +1463,7 @@ dependencies = [
 
 [[package]]
 name = "lda-llm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -1467,9 +1479,10 @@ dependencies = [
 
 [[package]]
 name = "lda-memory"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "lda-common",
+ "lda-security",
  "rusqlite",
  "serde_json",
  "tempfile",
@@ -1477,7 +1490,7 @@ dependencies = [
 
 [[package]]
 name = "lda-security"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "keyring",
  "lda-common",
@@ -1489,7 +1502,7 @@ dependencies = [
 
 [[package]]
 name = "lda-system"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "lda-common",
  "nix",
@@ -1499,20 +1512,25 @@ dependencies = [
 
 [[package]]
 name = "lda-tools"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "lda-common",
+ "lda-desktop",
  "lda-llm",
+ "lda-memory",
+ "lda-security",
  "lda-system",
+ "lda-web",
  "serde_json",
  "tokio",
  "tokio-util",
+ "url",
 ]
 
 [[package]]
 name = "lda-visual"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "gtk4",
  "lda-common",
@@ -1520,6 +1538,18 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror",
+]
+
+[[package]]
+name = "lda-web"
+version = "0.2.0"
+dependencies = [
+ "futures-util",
+ "lda-common",
+ "reqwest",
+ "serde_json",
+ "tokio",
+ "url",
 ]
 
 [[package]]

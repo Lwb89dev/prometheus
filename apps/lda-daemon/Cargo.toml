@@ -10,12 +10,14 @@ description = "User-level background service for Linux Desktop Agent"
 [dependencies]
 lda-common = { workspace = true }
 lda-core = { workspace = true }
+lda-desktop = { workspace = true }
 lda-ipc = { workspace = true }
 lda-llm = { workspace = true }
 lda-memory = { workspace = true }
 lda-security = { workspace = true }
 lda-system = { workspace = true }
 lda-tools = { workspace = true }
+lda-web = { workspace = true }
 async-trait = { workspace = true }
 clap = { workspace = true }
 reqwest = { workspace = true }

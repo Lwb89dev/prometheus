@@ -10,6 +10,8 @@ members = [
     "crates/lda-core",
     "crates/lda-ipc",
     "crates/lda-visual",
+    "crates/lda-web",
+    "crates/lda-desktop",
     "apps/lda-daemon",
     "apps/lda-cli",
     "apps/lda-gtk",
@@ -17,7 +19,7 @@ members = [
 default-members = ["apps/lda-daemon", "apps/lda-cli", "apps/lda-gtk"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
 rust-version = "1.85"
@@ -56,3 +58,5 @@ lda-tools = { path = "crates/lda-tools" }
 lda-core = { path = "crates/lda-core" }
 lda-ipc = { path = "crates/lda-ipc" }
 lda-visual = { path = "crates/lda-visual" }
+lda-web = { path = "crates/lda-web" }
+lda-desktop = { path = "crates/lda-desktop" }

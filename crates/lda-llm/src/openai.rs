@@ -74,6 +74,7 @@ impl LlmProvider for OpenAiProvider {
                     url: &url,
                     body: &body,
                     bearer: bearer.as_deref(),
+                    headers: &[],
                     timeout: request.timeout,
                     cancel,
                 },

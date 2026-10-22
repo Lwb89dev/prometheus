@@ -81,6 +81,91 @@ pub fn parse_openai_line(line: &str) -> Result<Vec<LlmDelta>> {
     Ok(out)
 }
 
+pub fn parse_anthropic_line(line: &str) -> Result<Vec<LlmDelta>> {
+    let Some(data) = line.trim().strip_prefix("data:") else {
+        return Ok(Vec::new());
+    };
+    let data = data.trim();
+    if data.is_empty() {
+        return Ok(Vec::new());
+    }
+    let value: Value = serde_json::from_str(data)
+        .map_err(|err| Error::Provider(format!("anthropic response: {err}")))?;
+    if let Some(error) = value.get("error") {
+        let message = error
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("anthropic request failed");
+        return Err(Error::Provider(message.to_string()));
+    }
+    let kind = value.get("type").and_then(Value::as_str).unwrap_or("");
+    let mut out = Vec::new();
+    match kind {
+        "content_block_start" => push_anthropic_start(&mut out, &value),
+        "content_block_delta" => push_anthropic_delta(&mut out, &value),
+        "message_start" | "message_delta" => push_anthropic_usage(&mut out, &value),
+        "message_stop" => out.push(LlmDelta::Finished),
+        _ => {}
+    }
+    Ok(out)
+}
+
+fn push_anthropic_start(out: &mut Vec<LlmDelta>, value: &Value) {
+    let Some(block) = value.get("content_block") else {
+        return;
+    };
+    if block.get("type").and_then(Value::as_str) != Some("tool_use") {
+        return;
+    }
+    let index = value.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+    out.push(LlmDelta::ToolCall {
+        index,
+        id: block.get("id").and_then(Value::as_str).map(str::to_string),
+        name: block
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        arguments: None,
+        replace_arguments: false,
+    });
+}
+
+fn push_anthropic_delta(out: &mut Vec<LlmDelta>, value: &Value) {
+    let Some(delta) = value.get("delta") else {
+        return;
+    };
+    let index = value.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+    match delta.get("type").and_then(Value::as_str) {
+        Some("text_delta") => push_text(out, delta.get("text")),
+        Some("input_json_delta") => out.push(LlmDelta::ToolCall {
+            index,
+            id: None,
+            name: None,
+            arguments: delta
+                .get("partial_json")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            replace_arguments: false,
+        }),
+        _ => {}
+    }
+}
+
+fn push_anthropic_usage(out: &mut Vec<LlmDelta>, value: &Value) {
+    let usage = value.get("usage").or_else(|| {
+        value
+            .get("message")
+            .and_then(|message| message.get("usage"))
+    });
+    let Some(usage) = usage else {
+        return;
+    };
+    out.push(LlmDelta::Usage {
+        input_tokens: u32_field(usage, "input_tokens"),
+        output_tokens: u32_field(usage, "output_tokens"),
+    });
+}
+
 fn push_text(out: &mut Vec<LlmDelta>, value: Option<&Value>) {
     let Some(text) = value.and_then(Value::as_str) else {
         return;
@@ -154,5 +239,32 @@ mod tests {
     #[test]
     fn openai_ignores_non_data_lines() {
         assert!(parse_openai_line(": keep-alive").unwrap().is_empty());
+    }
+
+    #[test]
+    fn anthropic_text_and_tool_stream() {
+        let text = parse_anthropic_line(
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}"#,
+        )
+        .unwrap();
+        assert_eq!(text, vec![LlmDelta::Text("Hi".into())]);
+        let start = parse_anthropic_line(
+            r#"data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"get_kernel_info","input":{}}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            &start[0],
+            LlmDelta::ToolCall { name: Some(name), .. } if name == "get_kernel_info"
+        ));
+        let partial = parse_anthropic_line(
+            r#"data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"k\":1}"}}"#,
+        )
+        .unwrap();
+        assert!(matches!(partial[0], LlmDelta::ToolCall { .. }));
+        let done = parse_anthropic_line(r#"data: {"type":"message_stop"}"#).unwrap();
+        assert_eq!(done, vec![LlmDelta::Finished]);
+        assert!(parse_anthropic_line("event: content_block_delta")
+            .unwrap()
+            .is_empty());
     }
 }

@@ -64,11 +64,51 @@ a `tool` fence instead of a native tool call still satisfies the loop when
 Keep functions shallow. More than three indentation levels is a signal to
 return early or extract a function, unless the extra level is actually required.
 
+## Checked while landing 0.2.0
+
+Host: Pop!_OS 24.04 LTS, Linux 7.2.6-76070206-generic, x86_64, COSMIC on Wayland.
+The numbers below are from that debug build on that machine. They are not a
+budget and they are not a release-build figure.
+
+Startup, until the daemon logged `listening on the session bus`, using a
+temporary `--config` and `--data-dir` under `/tmp` (not `~/.config/lda`):
+
+```text
+/usr/bin/time -f 'elapsed_sec %e max_rss_kb %M'
+elapsed_sec 0.04
+```
+
+That elapsed time is the waiter shell, polled every 10 ms. `max_rss_kb 3720`
+is that shell. The daemon's own `VmHWM` just after the log line was 21568 kB.
+An earlier sample the same way was 0.033 s and 21572 kB. Shutdown still logs
+`bus shutdown timed out` and then `stopped`, and the process exits.
+
+`AddNotification` on `org.freedesktop.portal.Desktop` returned success for one
+ignored test (`live_notification_when_portal_exists`). The toast itself was
+not watched. `lda-gtk` was left running for 4 seconds against that temporary
+daemon (`timeout` exit 124), produced no stderr, and the daemon was still
+alive afterward. The window was not clicked. Orca was not run. Accessible
+names are set on the transcript, the message box, search, and the source list.
+
+`pkg-config --exists gtk4-layer-shell-0` exits 1 on this machine, so
+layer-shell stays false. GlobalShortcuts was absent from the portal
+introspection when this session was probed. `rpmbuild` and `flatpak-builder`
+are not installed, so the RPM spec and the Flatpak manifest were not built.
+`dpkg-deb` is `/usr/bin/dpkg-deb`. `packaging/deb/build.sh` wrote
+`target/lda_0.2.0_amd64.deb` and that package was not installed. The packaged
+unit's `ExecStart` is rewritten to `/usr/bin/lda-daemon`. The copy in
+`packaging/systemd/user/` still points at `~/.local/bin` for a manual install.
+
 ## Not verified here
 
-- KDE Plasma, XFCE, and X11 sessions.
-- Global shortcuts and layer-shell.
-- A remote OpenAI-compatible provider with a real key.
+- KDE Plasma, XFCE, and X11 sessions. The KDE classification test only checks
+  that `tested_here` is false.
+- A click-through of the GTK window, including the Allow dialog and source links.
+- Orca or another screen reader.
+- A live SearXNG, a live page on the public internet, or a real Anthropic or
+  xAI key.
+- `open_uri`, `open_directory`, and `open_application` against this desktop.
+  The confirmation decision is covered by a scripted provider test.
 - Install of the systemd user unit, the D-Bus service file, or the desktop entry.
 - libadwaita.
-- Performance numbers. None are claimed.
+- An RPM build or a Flatpak build.

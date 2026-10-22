@@ -1,0 +1,17 @@
+[package]
+name = "lda-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Desktop portal adapter and capability checks"
+
+[dependencies]
+lda-common = { workspace = true }
+lda-system = { workspace = true }
+tokio = { workspace = true }
+zbus = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

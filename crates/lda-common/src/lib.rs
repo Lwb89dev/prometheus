@@ -13,13 +13,16 @@ pub mod message;
 pub mod paths;
 pub mod permission;
 
-pub use config::{AgentSettings, FileConfig, ProviderConfig, ProviderKind, ToolCallingMode};
+pub use config::{
+    AgentSettings, FileConfig, ProviderConfig, ProviderKind, ToolCallingMode, WebProviderKind,
+    WebSettings,
+};
 pub use endpoint::{endpoint_is_local, join_endpoint, parse_endpoint};
 pub use error::{Error, Result};
 pub use ids::{new_id, now_ms, title_from};
 pub use message::{
-    ConversationSummary, Message, Role, SendReply, StoredMessage, StreamEvent, ToolCall,
-    ToolRunRecord,
+    ConversationSummary, MemoryNote, Message, Role, SendReply, SourceLink, StoredMessage,
+    StreamEvent, ToolCall, ToolRunRecord,
 };
 pub use paths::{private_dir, read_to_string_limited, tighten_file, xdg_config_dir, xdg_data_dir};
 pub use permission::{ConfirmationPolicy, PermissionLevel, Risk};

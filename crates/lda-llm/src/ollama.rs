@@ -71,6 +71,7 @@ impl LlmProvider for OllamaProvider {
                     url: &url,
                     body: &body,
                     bearer: None,
+                    headers: &[],
                     timeout: request.timeout,
                     cancel,
                 },

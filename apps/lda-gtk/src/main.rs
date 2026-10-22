@@ -4,6 +4,7 @@
 
 mod bus;
 mod markdown;
+mod notes;
 mod settings;
 mod window;
 

@@ -6,13 +6,14 @@ use lda_common::{
     ToolCall, ToolCallingMode, ToolRunRecord, MAX_TOOL_OUTPUT,
 };
 use lda_llm::{ChatRequest, LlmDelta, LlmProvider, ToolCallBuffer, ToolDefinition};
-use lda_security::{preview, PermissionPolicy};
+use lda_security::{preview, Decision, PermissionPolicy};
 use lda_tools::{prepare_call, ToolRegistry};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
+use crate::confirm::{Answer, ConfirmHub};
 use crate::prompt::{extract_tool_fence, system_prompt, tool_result_body};
 
 #[derive(Debug, Clone)]
@@ -62,6 +63,10 @@ pub struct TurnRequest {
     pub cancel: CancellationToken,
     pub conversation_id: String,
     pub request_id: String,
+    pub confirm: Arc<ConfirmHub>,
+    pub memories: Vec<String>,
+    /// How long a user-action tool waits for `confirm_action`.
+    pub confirm_wait: Duration,
 }
 
 /// Run one user turn.
@@ -91,6 +96,8 @@ struct ActiveTurn<'a> {
     cancel: &'a CancellationToken,
     conversation_id: &'a str,
     request_id: &'a str,
+    confirm: &'a ConfirmHub,
+    confirm_wait: Duration,
     tx: &'a mpsc::Sender<(AgentEvent, Option<ToolRunRecord>)>,
 }
 
@@ -108,6 +115,9 @@ async fn execute_turn(
         cancel,
         conversation_id,
         request_id,
+        confirm,
+        memories,
+        confirm_wait,
     } = request;
     let active = ActiveTurn {
         registry: &registry,
@@ -116,12 +126,14 @@ async fn execute_turn(
         cancel: &cancel,
         conversation_id: &conversation_id,
         request_id: &request_id,
+        confirm: &confirm,
+        confirm_wait,
         tx,
     };
     let tools = offered_tools(&provider_cfg, &registry);
     let tools_offered = !tools.is_empty();
     info!(offered = tools.len(), "tools offered");
-    let prompt = system_prompt(provider_cfg.tool_calling, tools_offered);
+    let prompt = system_prompt(provider_cfg.tool_calling, tools_offered, &memories);
     install_system(&mut history, prompt);
     let native = tools_offered
         && provider.capabilities().tools
@@ -302,17 +314,13 @@ fn assistant_message(text: &str, calls: &[ToolCall]) -> Message {
 
 async fn execute_tool(turn: &ActiveTurn<'_>, call: &ToolCall) -> Result<(ToolRunRecord, Message)> {
     let started = now_ms();
-    let _ = turn
-        .tx
-        .send((
-            AgentEvent::Tool(StreamEvent::ToolStarted {
-                call_id: call.id.clone(),
-                name: call.name.clone(),
-            }),
-            None,
-        ))
-        .await;
-    let outcome = run_one(turn.registry, turn.policy, call, turn.limits, turn.cancel).await;
+    let outcome = match authorize(turn, call).await {
+        Err(err) => Err(err),
+        Ok(()) => {
+            announce_start(turn, call).await;
+            run_one(turn.registry, call, turn.limits, turn.cancel).await
+        }
+    };
     let (ok, body, error) = match outcome {
         Ok(value) => (true, Some(truncate_json(&value)), None),
         Err(err) if err.is_cancelled() => return Err(err),
@@ -335,28 +343,74 @@ async fn execute_tool(turn: &ActiveTurn<'_>, call: &ToolCall) -> Result<(ToolRun
     Ok((record, message))
 }
 
-async fn run_one(
-    registry: &ToolRegistry,
-    policy: &PermissionPolicy,
-    call: &ToolCall,
-    limits: &AgentLimits,
-    cancel: &CancellationToken,
-) -> Result<Value> {
+async fn announce_start(turn: &ActiveTurn<'_>, call: &ToolCall) {
+    let _ = turn
+        .tx
+        .send((
+            AgentEvent::Tool(StreamEvent::ToolStarted {
+                call_id: call.id.clone(),
+                name: call.name.clone(),
+            }),
+            None,
+        ))
+        .await;
+}
+
+async fn authorize(turn: &ActiveTurn<'_>, call: &ToolCall) -> Result<()> {
+    let tool = registered_tool(turn.registry, call)?;
+    let spec = tool.spec();
+    match turn.policy.decide(spec.permission, spec.confirmation) {
+        Decision::Deny => Err(lda_common::Error::PermissionDenied(format!(
+            "{} is not permitted ({:?})",
+            spec.name, spec.permission
+        ))),
+        Decision::Allow => Ok(()),
+        Decision::Confirm => ask_confirm(turn, call).await,
+    }
+}
+
+async fn ask_confirm(turn: &ActiveTurn<'_>, call: &ToolCall) -> Result<()> {
+    let summary = preview(&call.arguments.to_string(), 160);
+    let _ = turn
+        .tx
+        .send((
+            AgentEvent::Tool(StreamEvent::Confirmation {
+                call_id: call.id.clone(),
+                name: call.name.clone(),
+                summary,
+            }),
+            None,
+        ))
+        .await;
+    let key = format!("{}:{}", turn.request_id, call.id);
+    match turn.confirm.ask(key, turn.cancel, turn.confirm_wait).await {
+        Answer::Yes => Ok(()),
+        Answer::Cancelled => Err(lda_common::Error::Cancelled),
+        Answer::No => Err(lda_common::Error::PermissionDenied(
+            "confirmation was not granted".into(),
+        )),
+    }
+}
+
+fn registered_tool(registry: &ToolRegistry, call: &ToolCall) -> Result<Arc<dyn lda_tools::Tool>> {
     if !lda_tools::valid_tool_name(&call.name) {
         return Err(lda_common::Error::InvalidInput(
             "tool name is not allowed".into(),
         ));
     }
-    let Some(tool) = registry.get(&call.name) else {
-        return Err(lda_common::Error::NotFound(format!("tool {}", call.name)));
-    };
+    registry
+        .get(&call.name)
+        .ok_or_else(|| lda_common::Error::NotFound(format!("tool {}", call.name)))
+}
+
+async fn run_one(
+    registry: &ToolRegistry,
+    call: &ToolCall,
+    limits: &AgentLimits,
+    cancel: &CancellationToken,
+) -> Result<Value> {
+    let tool = registered_tool(registry, call)?;
     let spec = tool.spec();
-    if !policy.allows(spec.permission, spec.confirmation) {
-        return Err(lda_common::Error::PermissionDenied(format!(
-            "{} is not permitted ({:?})",
-            spec.name, spec.permission
-        )));
-    }
     prepare_call(tool.as_ref(), &call.arguments)?;
     let timeout = spec.timeout.min(limits.tool_timeout);
     let child = cancel.child_token();
@@ -553,6 +607,9 @@ mod tests {
             cancel,
             conversation_id: "conv".into(),
             request_id: "req".into(),
+            confirm: Arc::new(ConfirmHub::new()),
+            memories: Vec::new(),
+            confirm_wait: Duration::from_secs(120),
         }
     }
 
@@ -775,5 +832,84 @@ mod tests {
         config.share_system_context = true;
         assert!(!offered_tools(&config, &system_registry()).is_empty());
         let _ = FileConfig::default();
+    }
+
+    #[tokio::test]
+    async fn user_action_does_not_run_until_confirmed() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let registry = ToolRegistry::new(vec![counter(
+            "open_thing",
+            PermissionLevel::UserAction,
+            hits.clone(),
+        )]);
+        let provider = scripted_open("Not opened.");
+        let mut request = turn(
+            provider,
+            registry,
+            vec![Message::text(Role::User, "open it")],
+            AgentLimits::default(),
+            CancellationToken::new(),
+        );
+        request.policy = PermissionPolicy::daemon();
+        request.confirm_wait = Duration::from_millis(40);
+        let rx = run_turn(request).await;
+        let (text, tools) = collect(rx).await;
+        assert_eq!(hits.load(Ordering::SeqCst), 0);
+        assert_eq!(tools, 1);
+        assert!(text.contains("Not opened"));
+    }
+
+    #[tokio::test]
+    async fn confirmed_user_action_runs() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let registry = ToolRegistry::new(vec![counter(
+            "open_thing",
+            PermissionLevel::UserAction,
+            hits.clone(),
+        )]);
+        let hub = Arc::new(ConfirmHub::new());
+        let mut request = turn(
+            scripted_open("Opened."),
+            registry,
+            vec![Message::text(Role::User, "open it")],
+            AgentLimits::default(),
+            CancellationToken::new(),
+        );
+        request.policy = PermissionPolicy::daemon();
+        request.confirm = Arc::clone(&hub);
+        request.confirm_wait = Duration::from_secs(2);
+        let rx = run_turn(request).await;
+        let waiting = Arc::clone(&hub);
+        tokio::spawn(async move {
+            for _ in 0..40 {
+                if waiting.decide("req:c", true) {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        });
+        let (text, tools) = collect(rx).await;
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        assert_eq!(tools, 1);
+        assert!(text.contains("Opened"));
+    }
+
+    fn scripted_open(reply: &'static str) -> Arc<ScriptedProvider> {
+        Arc::new(ScriptedProvider::new(vec![
+            ScriptedRound {
+                chunks: vec![],
+                tool_calls: vec![ToolCall {
+                    id: "c".into(),
+                    name: "open_thing".into(),
+                    arguments: json!({}),
+                }],
+                hang: false,
+            },
+            ScriptedRound {
+                chunks: vec![reply.into()],
+                tool_calls: vec![],
+                hang: false,
+            },
+        ]))
     }
 }

@@ -141,6 +141,31 @@ pub enum StreamEvent {
     ReplaceText {
         text: String,
     },
+    /// Links from a search or a fetched page. They are not model prose.
+    Sources {
+        items: Vec<SourceLink>,
+    },
+    /// The daemon is waiting. The tool does not run until `confirm_action`.
+    Confirmation {
+        call_id: String,
+        name: String,
+        summary: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceLink {
+    pub title: String,
+    pub url: String,
+    /// `snippet` or `page`.
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryNote {
+    pub id: String,
+    pub body: String,
+    pub created_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

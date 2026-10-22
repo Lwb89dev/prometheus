@@ -15,6 +15,7 @@ pub struct JsonStream<'a> {
     pub url: &'a str,
     pub body: &'a Value,
     pub bearer: Option<&'a str>,
+    pub headers: &'a [(String, String)],
     pub timeout: Duration,
     pub cancel: CancellationToken,
 }
@@ -32,12 +33,16 @@ where
         url,
         body,
         bearer,
+        headers,
         timeout,
         cancel,
     } = call;
     let mut request = http.post(url).timeout(timeout).json(body);
     if let Some(token) = bearer {
         request = request.bearer_auth(token);
+    }
+    for (name, value) in headers {
+        request = request.header(name, value);
     }
     let response = tokio::select! {
         _ = cancel.cancelled() => return Err(Error::Cancelled),

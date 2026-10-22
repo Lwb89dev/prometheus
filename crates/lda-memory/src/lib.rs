@@ -3,14 +3,17 @@
 #![forbid(unsafe_code)]
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use lda_common::{
-    now_ms, ConversationSummary, Error, Message, Result, Role, StoredMessage, ToolCall,
+    now_ms, ConversationSummary, Error, MemoryNote, Message, Result, Role, StoredMessage, ToolCall,
     ToolRunRecord,
 };
+use lda_security::redact_secrets;
 use rusqlite::{params, Connection, OptionalExtension};
 
-const MIGRATIONS: &[&str] = &["
+const MIGRATIONS: &[&str] = &[
+    "
     CREATE TABLE conversations (
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
@@ -46,7 +49,15 @@ const MIGRATIONS: &[&str] = &["
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
     );
-    "];
+    ",
+    "
+    CREATE TABLE memories (
+        id TEXT PRIMARY KEY,
+        body TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+    );
+    ",
+];
 
 pub struct Store {
     conn: Connection,
@@ -305,7 +316,8 @@ impl Store {
                 "messages": messages,
             }));
         }
-        Ok(serde_json::json!({ "conversations": exported }))
+        let memories = self.list_memories()?;
+        Ok(serde_json::json!({ "conversations": exported, "memories": memories }))
     }
 
     pub fn purge_older_than(&self, cutoff_ms: i64) -> Result<usize> {
@@ -322,6 +334,154 @@ impl Store {
     pub fn path_of(data_dir: &Path) -> PathBuf {
         data_dir.join("lda.db")
     }
+
+    pub fn list_memories(&self) -> Result<Vec<MemoryNote>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, body, created_at FROM memories ORDER BY created_at ASC LIMIT 50")
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(MemoryNote {
+                    id: row.get(0)?,
+                    body: row.get(1)?,
+                    created_at: row.get(2)?,
+                })
+            })
+            .map_err(db_err)?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(db_err)
+    }
+
+    pub fn remember(&self, body: &str) -> Result<MemoryNote> {
+        let body = clean_memory(body)?;
+        if self.list_memories()?.len() >= 50 {
+            return Err(Error::InvalidInput(
+                "memory is full; delete a note first".into(),
+            ));
+        }
+        let note = MemoryNote {
+            id: lda_common::new_id(),
+            body,
+            created_at: now_ms(),
+        };
+        self.conn
+            .execute(
+                "INSERT INTO memories (id, body, created_at) VALUES (?1, ?2, ?3)",
+                params![note.id, note.body, note.created_at],
+            )
+            .map_err(db_err)?;
+        Ok(note)
+    }
+
+    pub fn forget(&self, id: &str) -> Result<()> {
+        if !valid_memory_id(id) {
+            return Err(Error::InvalidInput("memory id is not valid".into()));
+        }
+        let count = self
+            .conn
+            .execute("DELETE FROM memories WHERE id = ?1", [id])
+            .map_err(db_err)?;
+        if count == 0 {
+            return Err(Error::NotFound(id.to_string()));
+        }
+        Ok(())
+    }
+}
+
+fn clean_memory(body: &str) -> Result<String> {
+    let body = body.trim();
+    if body.is_empty() || body.chars().count() > 2_000 {
+        return Err(Error::InvalidInput(
+            "a memory must be 1 to 2000 characters".into(),
+        ));
+    }
+    if body
+        .chars()
+        .any(|ch| ch == '\0' || (ch.is_control() && ch != '\n'))
+    {
+        return Err(Error::InvalidInput(
+            "a memory contains unsupported control characters".into(),
+        ));
+    }
+    if redact_secrets(body) != body {
+        return Err(Error::InvalidInput(
+            "that note looks like a secret and was not stored".into(),
+        ));
+    }
+    Ok(body.to_string())
+}
+
+pub fn valid_memory_id(id: &str) -> bool {
+    let bytes = id.as_bytes();
+    bytes.len() == 32 && bytes.iter().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// Shared handle so tools and the daemon see the same notes.
+pub struct MemoryGate {
+    store: std::sync::Arc<Mutex<Store>>,
+    enabled: std::sync::atomic::AtomicBool,
+}
+
+impl MemoryGate {
+    pub fn new(store: std::sync::Arc<Mutex<Store>>, enabled: bool) -> Self {
+        Self {
+            store,
+            enabled: std::sync::atomic::AtomicBool::new(enabled),
+        }
+    }
+
+    pub fn set_enabled(&self, enabled: bool) {
+        self.enabled
+            .store(enabled, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.enabled.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub fn list(&self) -> Result<Vec<MemoryNote>> {
+        lock_store(&self.store)?.list_memories()
+    }
+
+    pub fn notes_for_prompt(&self) -> Vec<String> {
+        if !self.enabled() {
+            return Vec::new();
+        }
+        let Ok(notes) = self.list() else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        let mut chars = 0;
+        for note in notes {
+            if out.len() == 20 || chars + note.body.chars().count() > 4_000 {
+                break;
+            }
+            chars += note.body.chars().count();
+            out.push(note.body);
+        }
+        out
+    }
+
+    pub fn remember(&self, body: &str) -> Result<MemoryNote> {
+        if !self.enabled() {
+            return Err(Error::InvalidInput(
+                "persistent memory is disabled in the configuration".into(),
+            ));
+        }
+        lock_store(&self.store)?.remember(body)
+    }
+
+    /// Deletes a note even when new notes are disabled, so a saved note can be removed.
+    pub fn forget(&self, id: &str) -> Result<()> {
+        lock_store(&self.store)?.forget(id)
+    }
+}
+
+fn lock_store(store: &Mutex<Store>) -> Result<std::sync::MutexGuard<'_, Store>> {
+    store
+        .lock()
+        .map_err(|_| Error::Other("memory store lock is poisoned".into()))
 }
 
 fn map_conversation(row: &rusqlite::Row<'_>) -> rusqlite::Result<ConversationSummary> {
@@ -419,6 +579,16 @@ mod tests {
         let path = dir.path().join("lda.db");
         Store::open(&path).unwrap();
         Store::open(&path).unwrap();
+    }
+
+    #[test]
+    fn memory_is_explicit_and_rejects_secrets() {
+        let store = Store::open_in_memory().unwrap();
+        let note = store.remember("The printer is on the desk.").unwrap();
+        assert_eq!(store.list_memories().unwrap().len(), 1);
+        assert!(store.remember("token sk-abcdefghijklmnop").is_err());
+        store.forget(&note.id).unwrap();
+        assert!(store.list_memories().unwrap().is_empty());
     }
 
     #[test]

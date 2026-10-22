@@ -12,6 +12,8 @@ pub enum Error {
     InvalidInput(String),
     #[error("provider: {0}")]
     Provider(String),
+    #[error("network: {0}")]
+    Network(String),
     #[error("cancelled")]
     Cancelled,
     #[error("timed out: {0}")]

@@ -4,8 +4,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
+use gtk::accessible::Property;
 use gtk::{glib, prelude::*};
-use lda_common::{ConversationSummary, ProviderConfig, StreamEvent};
+use lda_common::{ConversationSummary, ProviderConfig, SourceLink, StreamEvent};
 use lda_visual::{Connection, DaemonVisualEvent, EntityCallbacks, EntityEvent, EntityWidget};
 
 use crate::bus::{Command, UiMsg};
@@ -19,6 +20,7 @@ pub struct Widgets {
     pub conversations: gtk::ListBox,
     pub search: gtk::SearchEntry,
     pub transcript: gtk::TextView,
+    pub sources: gtk::ListBox,
     pub live: gtk::Label,
     pub input: gtk::TextView,
     pub status: gtk::Label,
@@ -34,6 +36,7 @@ pub struct Model {
     pub search_generation: u64,
     pub pending: Vec<Pending>,
     pub secret_label: Option<gtk::Label>,
+    pub notes_list: Option<gtk::ListBox>,
 }
 
 pub enum Pending {
@@ -81,6 +84,7 @@ pub fn build(app: &gtk::Application, cmd: async_channel::Sender<Command>) -> Rc<
             search_generation: 0,
             pending: Vec::new(),
             secret_label: None,
+            notes_list: None,
         }),
     });
     hook_actions(&ctx);
@@ -112,6 +116,7 @@ fn build_widgets(app: &gtk::Application) -> Widgets {
     let stop_button = named_button("Stop", "stop");
     let copy_button = named_button("Copy", "copy");
     let settings_button = named_button("Settings", "settings");
+    let notes_button = named_button("Notes", "notes");
     let widget_button = named_button("Widget", "widget");
     let quit_daemon = named_button("Quit daemon", "quit-daemon");
     let providers = gtk::DropDown::from_strings(&["ollama"]);
@@ -120,6 +125,7 @@ fn build_widgets(app: &gtk::Application) -> Widgets {
     header.pack_start(&delete_button);
     header.pack_end(&quit_daemon);
     header.pack_end(&settings_button);
+    header.pack_end(&notes_button);
     header.pack_end(&widget_button);
     header.pack_end(&copy_button);
     header.pack_end(&stop_button);
@@ -129,6 +135,7 @@ fn build_widgets(app: &gtk::Application) -> Widgets {
     let search = gtk::SearchEntry::builder()
         .placeholder_text("Search conversations")
         .build();
+    label_widget(&search, "Search conversations");
     let conversations = gtk::ListBox::new();
     conversations.set_selection_mode(gtk::SelectionMode::Browse);
     let side_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
@@ -146,8 +153,14 @@ fn build_widgets(app: &gtk::Application) -> Widgets {
 
     let transcript = text_view(false);
     transcript.add_css_class("lda-transcript");
+    label_widget(&transcript, "Conversation transcript");
     let transcript_scroll = scrolled(&transcript, true);
     transcript_scroll.set_vexpand(true);
+    let sources = gtk::ListBox::new();
+    sources.set_selection_mode(gtk::SelectionMode::None);
+    sources.add_css_class("lda-sources");
+    sources.set_visible(false);
+    label_widget(&sources, "Sources");
     let live = gtk::Label::builder()
         .wrap(true)
         .selectable(true)
@@ -158,6 +171,7 @@ fn build_widgets(app: &gtk::Application) -> Widgets {
     live_scroll.set_size_request(-1, 72);
     let input = text_view(true);
     input.set_accepts_tab(false);
+    label_widget(&input, "Message");
     input.set_tooltip_text(Some("Message. Enter sends. Shift+Enter inserts a newline."));
     let input_scroll = scrolled(&input, false);
     input_scroll.set_size_request(-1, 88);
@@ -178,6 +192,7 @@ fn build_widgets(app: &gtk::Application) -> Widgets {
     chat.set_margin_top(8);
     chat.set_margin_bottom(8);
     chat.append(&transcript_scroll);
+    chat.append(&sources);
     chat.append(&live_scroll);
     chat.append(&input_row);
     chat.append(&status);
@@ -211,6 +226,7 @@ fn build_widgets(app: &gtk::Application) -> Widgets {
         conversations,
         search,
         transcript,
+        sources,
         live,
         input,
         status,
@@ -224,6 +240,7 @@ fn hook_actions(ctx: &Rc<Ctx>) {
     connect_clicked(ctx, "stop", |ctx| stop(ctx));
     connect_clicked(ctx, "copy", |ctx| copy_transcript(&ctx.widgets.transcript));
     connect_clicked(ctx, "settings", crate::settings::open);
+    connect_clicked(ctx, "notes", crate::notes::open);
     connect_clicked(ctx, "widget", toggle_entity);
     connect_clicked(ctx, "quit-daemon", confirm_quit_daemon);
     connect_clicked(ctx, "send", |ctx| send(ctx));
@@ -435,6 +452,7 @@ fn new_conversation(ctx: &Ctx) {
     ctx.model.borrow_mut().request_id = None;
     ctx.widgets.transcript.buffer().set_text("");
     ctx.widgets.live.set_text("");
+    clear_sources(&ctx.widgets.sources);
     set_status(&ctx.widgets, "New conversation.");
 }
 
@@ -461,6 +479,7 @@ fn send(ctx: &Ctx) {
         model.pending.clear();
     }
     ctx.widgets.live.set_text("");
+    clear_sources(&ctx.widgets.sources);
     ctx.widgets.entity.dispatch(EntityEvent::RequestStarted);
     set_status(&ctx.widgets, "Sending…");
     ctx.command(Command::Send {
@@ -570,6 +589,7 @@ fn on_ui(ctx: &Ctx, msg: UiMsg) {
         UiMsg::Deleted { id } => on_deleted(ctx, &id),
         UiMsg::DeletedAll => on_deleted_all(ctx),
         UiMsg::ShutdownDone => on_shutdown(ctx),
+        UiMsg::Memories(notes) => crate::notes::show(ctx, &notes),
     }
 }
 
@@ -666,7 +686,76 @@ fn on_event(ctx: &Ctx, request_id: String, event: StreamEvent) {
             append_live(&ctx.widgets.live, &format!("\nFinished {name} (ok={ok})"));
         }
         StreamEvent::ReplaceText { text } => ctx.widgets.live.set_text(text),
+        StreamEvent::Sources { items } => show_sources(&ctx.widgets.sources, items),
+        StreamEvent::Confirmation {
+            call_id,
+            name,
+            summary,
+        } => {
+            set_status(&ctx.widgets, "Waiting for confirmation…");
+            ask_confirmation(ctx, request_id, call_id.clone(), name, summary);
+        }
     }
+}
+
+fn show_sources(list: &gtk::ListBox, items: &[SourceLink]) {
+    clear_sources(list);
+    let mut shown = 0;
+    for item in items {
+        if !http_url(&item.url) {
+            continue;
+        }
+        let label = if item.title.trim().is_empty() {
+            item.url.clone()
+        } else {
+            item.title.clone()
+        };
+        let link = gtk::LinkButton::with_label(&item.url, &label);
+        link.set_halign(gtk::Align::Start);
+        list.append(&link);
+        shown += 1;
+    }
+    list.set_visible(shown > 0);
+}
+
+fn clear_sources(list: &gtk::ListBox) {
+    while let Some(child) = list.first_child() {
+        list.remove(&child);
+    }
+    list.set_visible(false);
+}
+
+fn http_url(url: &str) -> bool {
+    url.starts_with("https://") || url.starts_with("http://")
+}
+
+fn ask_confirmation(ctx: &Ctx, request_id: String, call_id: String, name: &str, summary: &str) {
+    let dialog = gtk::AlertDialog::builder()
+        .message(format!("Allow {name}?"))
+        .detail(summary)
+        .buttons(["Deny", "Allow"])
+        .cancel_button(0)
+        .default_button(0)
+        .modal(true)
+        .build();
+    let cmd = ctx.cmd.clone();
+    let parent = ctx.widgets.window.clone();
+    dialog.choose(
+        Some(&parent),
+        None::<&gtk::gio::Cancellable>,
+        move |response| {
+            let allow = response == Ok(1);
+            let _ = cmd.try_send(Command::Confirm {
+                request_id,
+                call_id,
+                allow,
+            });
+        },
+    );
+}
+
+fn label_widget(widget: &impl IsA<gtk::Accessible>, text: &str) {
+    widget.update_property(&[Property::Label(text)]);
 }
 
 fn on_done(ctx: &Ctx, request_id: &str, status: &str, error: &str) {
@@ -887,7 +976,7 @@ fn scroll_to_end(view: &gtk::TextView) {
     view.scroll_to_iter(&mut end, 0.0, true, 0.0, 1.0);
 }
 
-fn set_status(widgets: &Widgets, text: &str) {
+pub(crate) fn set_status(widgets: &Widgets, text: &str) {
     widgets.status.set_text(text);
 }
 

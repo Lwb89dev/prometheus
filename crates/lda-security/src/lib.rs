@@ -11,6 +11,6 @@ mod redact;
 mod secrets;
 
 pub use pathutil::resolve_within;
-pub use policy::PermissionPolicy;
+pub use policy::{Decision, PermissionPolicy};
 pub use redact::{preview, redact_secrets};
 pub use secrets::{resolve_api_key, KeyringSecretStore, MemorySecretStore, SecretStore};

@@ -9,6 +9,7 @@ description = "SQLite persistence for Linux Desktop Agent"
 
 [dependencies]
 lda-common = { workspace = true }
+lda-security = { workspace = true }
 rusqlite = { workspace = true }
 serde_json = { workspace = true }
 

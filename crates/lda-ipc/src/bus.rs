@@ -129,6 +129,30 @@ impl AgentObject {
     async fn export_data(&self) -> fdo::Result<String> {
         self.backend.export_data().await.map_err(dbus_err)
     }
+
+    async fn confirm_action(
+        &self,
+        request_id: &str,
+        call_id: &str,
+        allow: bool,
+    ) -> fdo::Result<()> {
+        self.backend
+            .confirm_action(request_id, call_id, allow)
+            .await
+            .map_err(dbus_err)
+    }
+
+    async fn list_memories(&self) -> fdo::Result<String> {
+        self.backend.list_memories().await.map_err(dbus_err)
+    }
+
+    async fn remember(&self, text: &str) -> fdo::Result<String> {
+        self.backend.remember(text).await.map_err(dbus_err)
+    }
+
+    async fn forget_memory(&self, id: &str) -> fdo::Result<()> {
+        self.backend.forget_memory(id).await.map_err(dbus_err)
+    }
 }
 
 fn dbus_err(err: Error) -> fdo::Error {
@@ -201,6 +225,14 @@ pub trait Agent {
     fn reload_config(&self) -> zbus::Result<()>;
 
     fn export_data(&self) -> zbus::Result<String>;
+
+    fn confirm_action(&self, request_id: &str, call_id: &str, allow: bool) -> zbus::Result<()>;
+
+    fn list_memories(&self) -> zbus::Result<String>;
+
+    fn remember(&self, text: &str) -> zbus::Result<String>;
+
+    fn forget_memory(&self, id: &str) -> zbus::Result<()>;
 
     #[zbus(signal)]
     fn stream_delta(&self, request_id: &str, text: &str) -> zbus::Result<()>;
@@ -314,6 +346,27 @@ mod tests {
 
         async fn export_data(&self) -> Result<String> {
             Ok(r#"{"conversations":[]}"#.to_string())
+        }
+
+        async fn confirm_action(
+            &self,
+            _request_id: &str,
+            _call_id: &str,
+            _allow: bool,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        async fn list_memories(&self) -> Result<String> {
+            Ok("[]".to_string())
+        }
+
+        async fn remember(&self, _text: &str) -> Result<String> {
+            Ok("{}".to_string())
+        }
+
+        async fn forget_memory(&self, _id: &str) -> Result<()> {
+            Ok(())
         }
     }
 

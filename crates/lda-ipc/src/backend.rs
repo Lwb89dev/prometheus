@@ -46,4 +46,12 @@ pub trait AgentBackend: Send + Sync {
     async fn reload_config(&self) -> Result<()>;
 
     async fn export_data(&self) -> Result<String>;
+
+    async fn confirm_action(&self, request_id: &str, call_id: &str, allow: bool) -> Result<()>;
+
+    async fn list_memories(&self) -> Result<String>;
+
+    async fn remember(&self, text: &str) -> Result<String>;
+
+    async fn forget_memory(&self, id: &str) -> Result<()>;
 }

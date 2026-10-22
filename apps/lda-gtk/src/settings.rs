@@ -70,7 +70,7 @@ fn build_form(provider: &ProviderConfig) -> Form {
     grid.set_column_spacing(8);
     grid.set_row_spacing(8);
     let id = entry(&provider.id);
-    let kind = gtk::DropDown::from_strings(&["ollama", "openai_compatible"]);
+    let kind = gtk::DropDown::from_strings(&["ollama", "openai_compatible", "anthropic", "xai"]);
     kind.set_selected(kind_index(provider.kind));
     let endpoint = entry(&provider.endpoint);
     let model = entry(&provider.model);
@@ -257,16 +257,20 @@ fn blank_to_none(text: &str) -> Option<String> {
 }
 
 fn selected_kind(index: u32) -> ProviderKind {
-    if index == 1 {
-        return ProviderKind::OpenaiCompatible;
+    match index {
+        1 => ProviderKind::OpenaiCompatible,
+        2 => ProviderKind::Anthropic,
+        3 => ProviderKind::Xai,
+        _ => ProviderKind::Ollama,
     }
-    ProviderKind::Ollama
 }
 
 fn kind_index(kind: ProviderKind) -> u32 {
     match kind {
         ProviderKind::Ollama => 0,
         ProviderKind::OpenaiCompatible => 1,
+        ProviderKind::Anthropic => 2,
+        ProviderKind::Xai => 3,
     }
 }
 

@@ -8,6 +8,7 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use crate::anthropic::AnthropicProvider;
 use crate::delta::LlmDelta;
 use crate::ollama::OllamaProvider;
 use crate::openai::OpenAiProvider;
@@ -61,7 +62,13 @@ pub fn build_provider(
             endpoint: config.endpoint.clone(),
             http,
         }),
-        ProviderKind::OpenaiCompatible => Arc::new(OpenAiProvider {
+        ProviderKind::OpenaiCompatible | ProviderKind::Xai => Arc::new(OpenAiProvider {
+            id: config.id.clone(),
+            endpoint: config.endpoint.clone(),
+            http,
+            api_key,
+        }),
+        ProviderKind::Anthropic => Arc::new(AnthropicProvider {
             id: config.id.clone(),
             endpoint: config.endpoint.clone(),
             http,

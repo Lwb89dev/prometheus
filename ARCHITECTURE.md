@@ -11,10 +11,12 @@ not own the daemon's lifetime.
 | `lda-common` | Config, messages, errors, paths, permission enums, bus names |
 | `lda-security` | Permission policy, path confinement, redaction, secrets |
 | `lda-system` | Read-only collectors over `/proc`, `/sys`, and a few fixed commands |
-| `lda-llm` | Provider trait, Ollama, OpenAI-compatible streaming |
-| `lda-tools` | Allowlisted tools, JSON-schema checks, system tool registry |
-| `lda-core` | Agent loop: context, tool rounds, cancellation, iteration cap |
-| `lda-memory` | SQLite conversations, messages, tool runs |
+| `lda-llm` | Provider trait, Ollama, OpenAI-compatible, Anthropic, xAI |
+| `lda-web` | Search client, HTML extraction, public-address checks |
+| `lda-desktop` | Portal capabilities, notifications, OpenURI, no-voice backend |
+| `lda-tools` | Allowlisted tools, JSON-schema checks, system, web, and action tools |
+| `lda-core` | Agent loop: context, tool rounds, confirmation, cancellation |
+| `lda-memory` | SQLite conversations, messages, tool runs, explicit notes |
 | `lda-ipc` | Session-bus API and a peer-to-peer test transport |
 | `lda-visual` | State model and Cairo drawing for the optional mark |
 | `lda-daemon` | Process that serves the bus |
@@ -40,6 +42,10 @@ Methods take and return strings. Structured values are JSON. Signals:
 `SendMessage` returns and reloads the conversation when `StreamDone` arrives,
 so a missed delta is reconciled from SQLite.
 
+`ConfirmAction`, `ListMemories`, `Remember`, and `ForgetMemory` are on the same
+interface. `ReloadConfig` rereads the file and applies the web settings and
+the `persistent_memory` flag.
+
 A second daemon sees `NameTaken` and exits 0. That lets the window spawn a
 daemon without caring whether one is already running.
 
@@ -56,7 +62,11 @@ optional.
    from the assistant text, or a single fenced JSON object whose only keys are
    `name` and optional `arguments`. Two JSON fences are ignored. User text and
    tool results are not parsed for calls.
-6. Validate the name, the arguments, and the permission. Then run the tool
+6. Validate the name, the arguments, and the permission. Read-only tools run.
+   User actions emit `Confirmation` and wait on `ConfirmHub` until
+   `confirm_action` or a timeout. The daemon publishes that event and returns
+   to its receive loop, so the bus method can answer without blocking the agent
+   task. System changes and destructive tools are denied. Then the tool runs
    with a timeout and a cancellation token.
 7. Persist the assistant tool-call message and the tool result. Send the result
    back as untrusted data.
@@ -79,6 +89,13 @@ calls use its native `tools` field. OpenAI-compatible calls use
 `tool_calling = "off"` offers nothing. `"native"` does not use the text fence.
 `"text"` does not send a tools array. `"auto"` does both.
 
+Anthropic uses `/messages`, splits the system prompt into the top-level
+`system` field, and maps `tool_use` / `input_json_delta` onto the same
+`LlmDelta::ToolCall` stream. The headers are `x-api-key` and
+`anthropic-version: 2023-06-01`. xAI is the OpenAI-compatible provider with
+`kind = "xai"` and an endpoint you set. Neither provider is contacted unless
+you configure it.
+
 Two HTTP clients exist. The loopback client disables proxy environment
 variables so `HTTP_PROXY` cannot redirect a local Ollama call.
 
@@ -92,16 +109,24 @@ holds it in a mutex and does not keep the guard across an await.
 Restart drops it. Search is a bounded SQL `LIKE` with `%`, `_`, and `\` escaped.
 
 Passwords, tokens, and private file contents are not a stored memory type.
-The milestone does not infer memories from the chat.
+Notes live in a `memories` table and are written only by `remember` or
+`lda-cli remember`. The system prompt includes them as data when
+`persistent_memory` is true. The assistant does not infer new notes.
+A note that still contains a redacted secret pattern is rejected.
+Deleting a note works after the flag is turned off, from **Notes** or
+`lda-cli forget`.
 
 ## Desktop
 
 `lda-system` classifies the session from `XDG_CURRENT_DESKTOP`,
 `XDG_SESSION_TYPE`, `WAYLAND_DISPLAY`, and `DISPLAY`. COSMIC is not reported as
 GNOME. Compositor names (`cosmic-comp`, `mutter`, `kwin`, `xfwm4`) are hints.
-There is no `DesktopEnvironmentAdapter` yet, because no adapter has a real
-implementation. Add the trait with the first adapter that registers a shortcut
-or a portal feature, and test it on that desktop before documenting it as working.
+`lda-desktop` reads the portal introspection and reports notification,
+OpenURI, GlobalShortcuts, and whether `gtk4-layer-shell-0` is installed.
+It calls `AddNotification` and `OpenURI` only when a tool or a confirmation
+asks it to. It does not register a shortcut. `tested_here` is true only for
+COSMIC and GNOME names; a KDE or XFCE classification says that desktop was
+not exercised here.
 
 `lda-visual` draws a procedural mark from a state machine. The GTK host creates
 one `EntityWidget` and forwards events that have already happened: connection,
@@ -116,10 +141,10 @@ clamp it to the work area. This milestone shows the mark in a normal GTK window.
 
 ## Voice
 
-Not implemented. A later backend (whisper.cpp, Vosk, Piper, or another local
-engine) should sit behind a trait with push-to-talk, a chosen language, and
-local processing. Do not enable an always-on microphone by default. Wake word
-stays optional and off.
+`VoiceBackend` is the trait. The only implementation is `NoVoice`, whose
+`available` is false. The GTK window does not open a microphone and does not
+show a control that claims to listen. A later local backend can implement the
+trait with push-to-talk. Do not enable an always-on microphone by default.
 
 ## Logging
 

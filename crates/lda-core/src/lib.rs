@@ -4,7 +4,9 @@
 #![forbid(unsafe_code)]
 
 mod agent;
+mod confirm;
 mod prompt;
 
 pub use agent::{offered_tools, run_turn, AgentEvent, AgentLimits, TurnRequest};
+pub use confirm::{Answer, ConfirmHub};
 pub use prompt::{extract_tool_fence, system_prompt};
