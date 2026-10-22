@@ -126,6 +126,24 @@ pub fn resolve_api_key(
 mod tests {
     use super::*;
 
+    /// `set_var` is process-global. Cargo runs these tests on several threads.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct ClearEnv<'a>(&'a str);
+
+    impl Drop for ClearEnv<'_> {
+        fn drop(&mut self) {
+            std::env::remove_var(self.0);
+        }
+    }
+
+    fn with_env(name: &str, value: &str, body: impl FnOnce()) {
+        let _guard = ENV_LOCK.lock().expect("env test lock");
+        std::env::set_var(name, value);
+        let _clear = ClearEnv(name);
+        body();
+    }
+
     #[test]
     fn memory_store_round_trip() {
         let store = MemorySecretStore::default();
@@ -142,20 +160,25 @@ mod tests {
     #[test]
     fn env_fallback_when_store_empty() {
         let store = MemorySecretStore::default();
-        let name = "LDA_TEST_API_KEY_DO_NOT_USE";
-        std::env::set_var(name, "from-env-not-a-real-key");
-        let got = resolve_api_key(&store, "missing", Some(name)).unwrap();
-        std::env::remove_var(name);
-        assert_eq!(got.as_deref(), Some("from-env-not-a-real-key"));
+        with_env(
+            "LDA_TEST_API_KEY_EMPTY_STORE",
+            "from-env-not-a-real-key",
+            || {
+                let got = resolve_api_key(&store, "missing", Some("LDA_TEST_API_KEY_EMPTY_STORE"))
+                    .unwrap();
+                assert_eq!(got.as_deref(), Some("from-env-not-a-real-key"));
+            },
+        );
     }
 
     #[test]
     fn secret_service_wins_over_env() {
         let store = MemorySecretStore::default();
         store.set("openai", "from-store").unwrap();
-        std::env::set_var("LDA_TEST_API_KEY_DO_NOT_USE", "from-env");
-        let got = resolve_api_key(&store, "openai", Some("LDA_TEST_API_KEY_DO_NOT_USE")).unwrap();
-        std::env::remove_var("LDA_TEST_API_KEY_DO_NOT_USE");
-        assert_eq!(got.as_deref(), Some("from-store"));
+        with_env("LDA_TEST_API_KEY_STORE_WINS", "from-env", || {
+            let got =
+                resolve_api_key(&store, "openai", Some("LDA_TEST_API_KEY_STORE_WINS")).unwrap();
+            assert_eq!(got.as_deref(), Some("from-store"));
+        });
     }
 }
