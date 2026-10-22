@@ -1,0 +1,32 @@
+[package]
+name = "lda-daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "User-level background service for Linux Desktop Agent"
+
+[dependencies]
+lda-common = { workspace = true }
+lda-core = { workspace = true }
+lda-ipc = { workspace = true }
+lda-llm = { workspace = true }
+lda-memory = { workspace = true }
+lda-security = { workspace = true }
+lda-system = { workspace = true }
+lda-tools = { workspace = true }
+async-trait = { workspace = true }
+clap = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+zbus = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

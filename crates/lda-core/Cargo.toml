@@ -1,0 +1,22 @@
+[package]
+name = "lda-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Agent loop for Linux Desktop Agent"
+
+[dependencies]
+lda-common = { workspace = true }
+lda-llm = { workspace = true }
+lda-security = { workspace = true }
+lda-tools = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+async-trait = { workspace = true }
+lda-llm = { workspace = true, features = ["test-util"] }

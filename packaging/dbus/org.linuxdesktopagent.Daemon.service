@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=org.linuxdesktopagent.Daemon
+Exec=/usr/bin/env lda-daemon
+SystemdService=lda-daemon.service

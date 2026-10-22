@@ -1,0 +1,18 @@
+[package]
+name = "lda-visual"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "State-driven native GTK visual entity for Prometeus"
+
+[dependencies]
+gtk4 = { workspace = true }
+lda-common = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

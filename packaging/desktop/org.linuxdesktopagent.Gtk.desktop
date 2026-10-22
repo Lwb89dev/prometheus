@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Linux Desktop Agent
+GenericName=Personal assistant
+Comment=Local personal assistant for the Linux desktop
+Exec=lda-gtk
+Icon=org.linuxdesktopagent.Gtk
+Terminal=false
+Type=Application
+Categories=Utility;
+StartupNotify=true
+Keywords=assistant;llm;ollama;

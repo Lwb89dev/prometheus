@@ -1,0 +1,58 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/lda-common",
+    "crates/lda-security",
+    "crates/lda-system",
+    "crates/lda-llm",
+    "crates/lda-memory",
+    "crates/lda-tools",
+    "crates/lda-core",
+    "crates/lda-ipc",
+    "crates/lda-visual",
+    "apps/lda-daemon",
+    "apps/lda-cli",
+    "apps/lda-gtk",
+]
+default-members = ["apps/lda-daemon", "apps/lda-cli", "apps/lda-gtk"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+rust-version = "1.85"
+publish = false
+
+[workspace.dependencies]
+tokio = { version = "1.48", features = ["fs", "io-util", "macros", "rt-multi-thread", "signal", "sync", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+uuid = { version = "1", features = ["v4"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+async-trait = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+futures-util = "0.3"
+rusqlite = "0.40"
+zbus = { version = "=5.19.0", default-features = false, features = ["p2p", "tokio"] }
+url = "2"
+toml = "1"
+clap = { version = "4", features = ["derive"] }
+keyring = "4"
+pulldown-cmark = "0.13"
+gtk4 = { version = "0.11", features = ["v4_14"] }
+nix = { version = "0.31", default-features = false, features = ["fs"] }
+async-channel = "2"
+tempfile = "3"
+
+lda-common = { path = "crates/lda-common" }
+lda-security = { path = "crates/lda-security" }
+lda-system = { path = "crates/lda-system" }
+lda-llm = { path = "crates/lda-llm" }
+lda-memory = { path = "crates/lda-memory" }
+lda-tools = { path = "crates/lda-tools" }
+lda-core = { path = "crates/lda-core" }
+lda-ipc = { path = "crates/lda-ipc" }
+lda-visual = { path = "crates/lda-visual" }
