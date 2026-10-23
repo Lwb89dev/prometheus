@@ -7,6 +7,7 @@ mod markdown;
 mod notes;
 mod settings;
 mod setup;
+mod talk;
 mod window;
 
 use std::path::PathBuf;

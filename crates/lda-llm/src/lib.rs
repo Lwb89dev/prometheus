@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 mod anthropic;
+mod audio;
 mod delta;
 mod http;
 mod ollama;
@@ -17,6 +18,7 @@ mod provider;
 #[cfg(any(test, feature = "test-util"))]
 pub mod scripted;
 
+pub use audio::{synthesize_speech, transcribe_audio};
 pub use delta::{push_lines, LlmDelta, ToolCallBuffer};
 pub use ollama::{apply_show, models_from_tags, pull_model, OllamaProvider};
 pub use provider::{

@@ -26,8 +26,9 @@ pub use message::{
     StreamEvent, ToolCall, ToolRunRecord,
 };
 pub use models::{
-    is_catalog_model, model_is_unset, rank_installed, suggest_for_ram, DiscoveryReport,
-    InstalledModel, ModelSuggestion,
+    chat_refused, is_catalog_model, kind_of, model_is_unset, model_kind, pick_transcriber,
+    rank_installed, suggest_for_ram, transcript_next, wav_is_usable, DiscoveryReport,
+    InstalledModel, ModelKind, ModelSuggestion, Transcript, TranscriptNext, MAX_AUDIO_BYTES,
 };
 pub use paths::{private_dir, read_to_string_limited, tighten_file, xdg_config_dir, xdg_data_dir};
 pub use permission::{ConfirmationPolicy, PermissionLevel, Risk};

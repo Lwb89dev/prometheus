@@ -1440,6 +1440,7 @@ dependencies = [
  "futures-util",
  "gtk4",
  "lda-common",
+ "lda-desktop",
  "lda-ipc",
  "lda-visual",
  "libadwaita",

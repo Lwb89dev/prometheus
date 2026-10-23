@@ -7,7 +7,7 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use lda_common::{
     private_dir, xdg_data_dir, ConversationSummary, DiscoveryReport, MemoryNote, ProviderConfig,
-    SendReply, StoredMessage, StreamEvent,
+    SendReply, StoredMessage, StreamEvent, Transcript,
 };
 use lda_ipc::{session_proxy, AgentProxy, BusStreamEvent, StreamDelta, StreamDone};
 
@@ -71,6 +71,14 @@ pub enum Command {
     ForgetMemory {
         id: String,
     },
+    Transcribe {
+        id: String,
+        wav: Vec<u8>,
+    },
+    Synthesize {
+        id: String,
+        text: String,
+    },
 }
 
 pub enum UiMsg {
@@ -114,6 +122,8 @@ pub enum UiMsg {
     DeletedAll,
     ShutdownDone,
     Memories(Vec<MemoryNote>),
+    Transcript(Transcript),
+    Speech(Vec<u8>),
 }
 
 pub async fn run(
@@ -255,6 +265,47 @@ async fn handle_command(proxy: &AgentProxy<'_>, ui: &async_channel::Sender<UiMsg
         Command::ForgetMemory { id } => {
             send_unit(ui, proxy.forget_memory(&id).await, "Note deleted.").await;
             list_memories(proxy, ui).await;
+        }
+        Command::Transcribe { id, wav } => transcribe(proxy, ui, &id, &wav).await,
+        Command::Synthesize { id, text } => synthesize(proxy, ui, &id, &text).await,
+    }
+}
+
+async fn transcribe(
+    proxy: &AgentProxy<'_>,
+    ui: &async_channel::Sender<UiMsg>,
+    id: &str,
+    wav: &[u8],
+) {
+    let raw = match proxy.transcribe(id, wav).await {
+        Ok(raw) => raw,
+        Err(err) => {
+            let _ = ui.send(UiMsg::RequestFailed(err.to_string())).await;
+            return;
+        }
+    };
+    match serde_json::from_str::<Transcript>(&raw) {
+        Ok(transcript) => {
+            let _ = ui.send(UiMsg::Transcript(transcript)).await;
+        }
+        Err(err) => {
+            let _ = ui.send(UiMsg::RequestFailed(err.to_string())).await;
+        }
+    }
+}
+
+async fn synthesize(
+    proxy: &AgentProxy<'_>,
+    ui: &async_channel::Sender<UiMsg>,
+    id: &str,
+    text: &str,
+) {
+    match proxy.synthesize(id, text).await {
+        Ok(wav) => {
+            let _ = ui.send(UiMsg::Speech(wav)).await;
+        }
+        Err(err) => {
+            let _ = ui.send(UiMsg::RequestFailed(err.to_string())).await;
         }
     }
 }

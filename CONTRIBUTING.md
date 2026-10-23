@@ -58,8 +58,9 @@ can test the desktop, not before.
 2. Do not assume an X11 feature exists on Wayland. Do not treat COSMIC as GNOME.
 3. A floating widget that needs layer-shell should use the real library.
    `EntityWidget` remains the drawing and the state.
-4. Voice capture implements `VoiceBackend`. Leave `NoVoice` as the default
-   until a local engine exists, and do not open a microphone at startup.
+4. Voice capture implements `VoiceBackend`. Keep `NoVoice` as an off switch
+   that does not spawn a recorder. Do not open a microphone at startup and do
+   not add a wake word. A recording goes only to a loopback endpoint.
 5. Write down what you ran and what you did not run in `DEVELOPMENT.md`.
    Untested integration is not a supported feature.
 

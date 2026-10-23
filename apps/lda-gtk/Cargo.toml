@@ -9,6 +9,7 @@ description = "GTK 4 and libadwaita conversation window for Linux Desktop Agent"
 
 [dependencies]
 lda-common = { workspace = true }
+lda-desktop = { workspace = true }
 lda-ipc = { workspace = true }
 lda-visual = { workspace = true }
 async-channel = { workspace = true }

@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 use futures_util::StreamExt;
-use lda_common::{Error, Result, SendReply, StreamEvent};
+use lda_common::{Error, Result, SendReply, StreamEvent, Transcript};
 use lda_ipc::{session_proxy, AgentProxy, BusStreamEvent, StreamDelta, StreamDone};
 use lda_security::PermissionPolicy;
 use lda_tools::{prepare_call, system_registry};
@@ -95,6 +95,20 @@ enum Commands {
     Forget { id: String },
     /// Reread the configuration file.
     Reload,
+    /// Transcribe a wav with the selected model, or the only installed speech-to-text model.
+    Transcribe {
+        file: PathBuf,
+        #[arg(short, long, default_value = "")]
+        provider: String,
+    },
+    /// Speak text with a local speech model. A conversation model is refused.
+    Speak {
+        text: String,
+        #[arg(short, long, default_value = "")]
+        provider: String,
+        #[arg(short, long)]
+        out: PathBuf,
+    },
 }
 
 #[tokio::main]
@@ -148,7 +162,41 @@ async fn dispatch(cli: Cli) -> Result<()> {
         }
         Commands::Forget { id } => proxy().await?.forget_memory(&id).await.map_err(ipc),
         Commands::Reload => proxy().await?.reload_config().await.map_err(ipc),
+        Commands::Transcribe { file, provider } => transcribe(&file, &provider).await,
+        Commands::Speak {
+            text,
+            provider,
+            out,
+        } => speak(&text, &provider, &out).await,
     }
+}
+
+async fn transcribe(file: &std::path::Path, provider: &str) -> Result<()> {
+    let wav = std::fs::read(file)?;
+    let raw = proxy()
+        .await?
+        .transcribe(provider, &wav)
+        .await
+        .map_err(ipc)?;
+    let transcript: Transcript =
+        serde_json::from_str(&raw).map_err(|err| Error::Ipc(err.to_string()))?;
+    println!("{}", transcript.text);
+    eprintln!(
+        "model {} follow_up {}",
+        transcript.model, transcript.follow_up
+    );
+    Ok(())
+}
+
+async fn speak(text: &str, provider: &str, out: &std::path::Path) -> Result<()> {
+    let wav = proxy()
+        .await?
+        .synthesize(provider, text)
+        .await
+        .map_err(ipc)?;
+    std::fs::write(out, &wav)?;
+    println!("wrote {} bytes to {}", wav.len(), out.display());
+    Ok(())
 }
 
 async fn proxy() -> Result<AgentProxy<'static>> {

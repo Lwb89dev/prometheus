@@ -142,10 +142,23 @@ clamp it to the work area. This milestone shows the mark in a normal GTK window.
 
 ## Voice
 
-`VoiceBackend` is the trait. The only implementation is `NoVoice`, whose
-`available` is false. The GTK window does not open a microphone and does not
-show a control that claims to listen. A later local backend can implement the
-trait with push-to-talk. Do not enable an always-on microphone by default.
+`VoiceBackend` is the trait. `NoVoice` reports the microphone unavailable and
+spawns nothing. `LocalVoice` reports push-to-talk when `pw-record` or
+`parecord` is on `PATH`. `wake_word` stays false.
+
+The GTK **Talk** control is the only thing that calls `Capture::start`. The
+microphone closes on the next click, after 30 seconds, or when the window
+closes. Dropping a capture kills the recorder and deletes its wav.
+
+The daemon classifies the selected model from Ollama's capability list, or
+from the name when that list is missing. `completion` chats. `speech` is read
+aloud through `/v1/audio/speech` and is not sent to `/api/chat`. `transcription`
+(or a `whisper*` name when the server omitted capabilities) transcribes through
+`/v1/audio/transcriptions`. A conversation model that also transcribes uses the
+same model for both. If the selected model only chats and exactly one
+speech-to-text model is installed, Talk uses that model for the audio and
+sends the text to the conversation model. Several speech-to-text models require
+an explicit choice. Audio is refused unless the endpoint is loopback.
 
 ## Decisions
 

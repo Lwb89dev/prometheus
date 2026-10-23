@@ -60,4 +60,10 @@ pub trait AgentBackend: Send + Sync {
     async fn remember(&self, text: &str) -> Result<String>;
 
     async fn forget_memory(&self, id: &str) -> Result<()>;
+
+    /// Transcribe a wav on a loopback server. The bytes are not stored.
+    async fn transcribe(&self, provider_id: &str, wav: &[u8]) -> Result<String>;
+
+    /// Ask a local speech model for a wav. Chat models are refused.
+    async fn synthesize(&self, provider_id: &str, text: &str) -> Result<Vec<u8>>;
 }

@@ -47,5 +47,6 @@ cargo run -p lda-visual --example preview
 ```
 
 It exposes all currently representable states plus simulated microphone level.
-Listening and transcription remain preview/manual inputs until the application
-has a real, user-authorized audio source.
+The host opens a microphone only while its Talk control is on. This crate
+still does not open a device. It shows listening when the host says capture
+started.

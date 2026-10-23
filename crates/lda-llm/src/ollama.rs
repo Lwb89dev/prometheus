@@ -102,7 +102,7 @@ impl OllamaProvider {
         let mut models = models_from_tags(&body);
         let truncated = models.len() > 24;
         models.truncate(24);
-        let shows = join_all(models.iter().map(|model| self.show_model(&model.name))).await;
+        let shows = join_all(models.iter().map(|model| self.show(&model.name))).await;
         for (model, show) in models.iter_mut().zip(shows) {
             if let Ok(body) = show {
                 apply_show(model, &body);
@@ -112,7 +112,7 @@ impl OllamaProvider {
         Ok((models, truncated))
     }
 
-    async fn show_model(&self, name: &str) -> Result<Value> {
+    pub async fn show(&self, name: &str) -> Result<Value> {
         let url = join_endpoint(&self.endpoint, "api/show")?;
         let response = self
             .http
@@ -237,6 +237,7 @@ fn model_from_tag(item: &Value) -> Option<InstalledModel> {
         family: text_field(details, "family"),
         parameter_size: text_field(details, "parameter_size"),
         tools: None,
+        capabilities: Vec::new(),
     })
 }
 
@@ -244,8 +245,13 @@ pub fn apply_show(model: &mut InstalledModel, body: &Value) {
     let Some(caps) = body.get("capabilities").and_then(Value::as_array) else {
         return;
     };
-    let tools = caps.iter().any(|item| item.as_str() == Some("tools"));
-    model.tools = Some(tools);
+    model.capabilities = caps
+        .iter()
+        .filter_map(|item| item.as_str())
+        .filter(|item| !item.is_empty() && item.len() <= 64 && !item.chars().any(char::is_control))
+        .map(str::to_string)
+        .collect();
+    model.tools = Some(model.capabilities.iter().any(|item| item == "tools"));
 }
 
 fn text_field(details: Option<&Value>, key: &str) -> String {
@@ -348,6 +354,10 @@ mod tests {
         apply_show(&mut models[1], &json!({ "capabilities": ["completion"] }));
         assert_eq!(models[0].tools, Some(true));
         assert_eq!(models[1].tools, Some(false));
+        assert_eq!(
+            models[0].capabilities,
+            vec!["completion".to_string(), "tools".to_string()]
+        );
         assert_eq!(models[0].family, "qwen2");
     }
 

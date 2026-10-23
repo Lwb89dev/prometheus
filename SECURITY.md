@@ -91,6 +91,11 @@ at least 8 characters before a preview is logged or shown.
 Provider calls use rustls. The loopback client is built with `no_proxy`.
 Redirects on provider calls are limited. There is no telemetry.
 
+Microphone audio is sent only after Talk is on, and only to a loopback Ollama
+or OpenAI-compatible endpoint. A remote provider is refused. The recording is
+a temporary wav and is deleted after it is read. Speech returned by a local
+speech model is played on this machine.
+
 Web search is off until `[web]` says otherwise. SearXNG must be a loopback
 URL unless `allow_remote_search` is true. Page fetch blocks loopback, private,
 link-local, CGNAT, metadata names, and similar addresses unless

@@ -171,6 +171,32 @@ impl AgentObject {
     async fn forget_memory(&self, id: &str) -> fdo::Result<()> {
         self.backend.forget_memory(id).await.map_err(dbus_err)
     }
+
+    async fn transcribe(
+        &self,
+        #[zbus(connection)] conn: &Connection,
+        provider_id: &str,
+        wav: Vec<u8>,
+    ) -> fdo::Result<String> {
+        self.attach(conn);
+        self.backend
+            .transcribe(provider_id, &wav)
+            .await
+            .map_err(dbus_err)
+    }
+
+    async fn synthesize(
+        &self,
+        #[zbus(connection)] conn: &Connection,
+        provider_id: &str,
+        text: &str,
+    ) -> fdo::Result<Vec<u8>> {
+        self.attach(conn);
+        self.backend
+            .synthesize(provider_id, text)
+            .await
+            .map_err(dbus_err)
+    }
 }
 
 fn dbus_err(err: Error) -> fdo::Error {
@@ -257,6 +283,10 @@ pub trait Agent {
     fn remember(&self, text: &str) -> zbus::Result<String>;
 
     fn forget_memory(&self, id: &str) -> zbus::Result<()>;
+
+    fn transcribe(&self, provider_id: &str, wav: &[u8]) -> zbus::Result<String>;
+
+    fn synthesize(&self, provider_id: &str, text: &str) -> zbus::Result<Vec<u8>>;
 
     #[zbus(signal)]
     fn stream_delta(&self, request_id: &str, text: &str) -> zbus::Result<()>;
@@ -403,6 +433,14 @@ mod tests {
 
         async fn forget_memory(&self, _id: &str) -> Result<()> {
             Ok(())
+        }
+
+        async fn transcribe(&self, _provider_id: &str, _wav: &[u8]) -> Result<String> {
+            Ok(r#"{"text":"","model":"","follow_up":"insert"}"#.to_string())
+        }
+
+        async fn synthesize(&self, _provider_id: &str, _text: &str) -> Result<Vec<u8>> {
+            Ok(Vec::new())
         }
     }
 

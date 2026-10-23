@@ -7,7 +7,10 @@ use std::time::Duration;
 use adw::prelude::*;
 use gtk::accessible::Property;
 use gtk::glib;
-use lda_common::{ConversationSummary, ProviderConfig, ProviderKind, SourceLink, StreamEvent};
+use lda_common::{
+    kind_of, model_kind, ConversationSummary, InstalledModel, ModelKind, ProviderConfig,
+    ProviderKind, SourceLink, StreamEvent,
+};
 use lda_visual::{Connection, DaemonVisualEvent, EntityCallbacks, EntityEvent, EntityWidget};
 
 use crate::bus::{Command, UiMsg};
@@ -24,6 +27,8 @@ pub struct Widgets {
     pub sources: gtk::ListBox,
     pub live: gtk::Label,
     pub input: gtk::TextView,
+    pub send: gtk::Button,
+    pub talk: gtk::ToggleButton,
     pub status: gtk::Label,
 }
 
@@ -42,6 +47,11 @@ pub struct Model {
     pub suggestion_list: Option<gtk::ListBox>,
     pub setup_notice: Option<gtk::Label>,
     pub setup_dialog: Option<adw::Dialog>,
+    pub installed: Vec<InstalledModel>,
+    pub draft: String,
+    pub talk_generation: u64,
+    pub talk_quiet: bool,
+    pub outgoing: bool,
 }
 
 pub enum Pending {
@@ -64,6 +74,7 @@ pub struct Ctx {
     pub cmd: async_channel::Sender<Command>,
     pub widgets: Widgets,
     pub model: RefCell<Model>,
+    pub capture: RefCell<Option<lda_desktop::Capture>>,
 }
 
 impl Ctx {
@@ -94,14 +105,36 @@ pub fn build(app: &gtk::Application, cmd: async_channel::Sender<Command>) -> Rc<
             suggestion_list: None,
             setup_notice: None,
             setup_dialog: None,
+            installed: Vec::new(),
+            draft: String::new(),
+            talk_generation: 0,
+            talk_quiet: false,
+            outgoing: false,
         }),
+        capture: RefCell::new(None),
     });
     hook_actions(&ctx);
     install_css();
     ctx.widgets.entity_window.present();
     ctx.widgets.window.present();
     ctx.widgets.input.grab_focus();
+    // The entity window maps on its own and can become the active toplevel
+    // after this call returns. Present the conversation again once that map
+    // has settled, or typed keys and Enter never reach the message box.
+    focus_chat_later(&ctx);
     ctx
+}
+
+fn focus_chat_later(ctx: &Rc<Ctx>) {
+    let ctx = Rc::clone(ctx);
+    glib::timeout_add_local(Duration::from_millis(150), move || {
+        if ctx.model.borrow().setup_dialog.is_some() {
+            return glib::ControlFlow::Break;
+        }
+        ctx.widgets.window.present();
+        ctx.widgets.input.grab_focus();
+        glib::ControlFlow::Break
+    });
 }
 
 pub fn bind_events(ctx: Rc<Ctx>, rx: async_channel::Receiver<UiMsg>) {
@@ -184,10 +217,18 @@ fn build_widgets(app: &gtk::Application) -> Widgets {
     let input = text_view(true);
     input.set_accepts_tab(false);
     label_widget(&input, "Message");
-    input.set_tooltip_text(Some("Message. Enter sends. Shift+Enter inserts a newline."));
+    input.set_tooltip_text(Some(
+        "Message. Enter sends. Shift+Enter inserts a newline. Talk listens only while it is on.",
+    ));
     let input_scroll = scrolled(&input, false);
     input_scroll.set_size_request(-1, 88);
     let send_button = named_button("Send", "send");
+    let talk = gtk::ToggleButton::with_label("Talk");
+    talk.set_widget_name("talk");
+    talk.set_tooltip_text(Some(
+        "Talk. Click to open the microphone. Click again to close it. It also closes after 30 seconds. Nothing listens at startup.",
+    ));
+    label_widget(&talk, "Talk");
     let status = gtk::Label::builder()
         .label("Connecting…")
         .xalign(0.0)
@@ -196,6 +237,7 @@ fn build_widgets(app: &gtk::Application) -> Widgets {
     status.add_css_class("lda-status");
     let input_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     input_row.append(&input_scroll);
+    input_row.append(&talk);
     input_row.append(&send_button);
     input_scroll.set_hexpand(true);
     let chat = gtk::Box::new(gtk::Orientation::Vertical, 6);
@@ -242,6 +284,8 @@ fn build_widgets(app: &gtk::Application) -> Widgets {
         sources,
         live,
         input,
+        send: send_button,
+        talk,
         status,
     }
 }
@@ -257,7 +301,9 @@ fn hook_actions(ctx: &Rc<Ctx>) {
     connect_clicked(ctx, "notes", crate::notes::open);
     connect_clicked(ctx, "widget", toggle_entity);
     connect_clicked(ctx, "quit-daemon", confirm_quit_daemon);
-    connect_clicked(ctx, "send", send);
+    let ctx_send = Rc::clone(ctx);
+    ctx.widgets.send.connect_clicked(move |_| send(&ctx_send));
+    crate::talk::hook(ctx);
     hook_input(ctx);
     hook_search(ctx);
     hook_rows(ctx);
@@ -292,6 +338,9 @@ fn find_named(widget: &gtk::Widget, name: &str) -> Option<gtk::Button> {
 
 fn hook_input(ctx: &Rc<Ctx>) {
     let controller = gtk::EventControllerKey::new();
+    // The text view's own key controller is bubble-phase and consumes Return
+    // before a later bubble controller runs. Capture runs first.
+    controller.set_propagation_phase(gtk::PropagationPhase::Capture);
     let ctx_key = Rc::clone(ctx);
     controller.connect_key_pressed(move |_controller, key, _code, modifiers| {
         on_input_key(&ctx_key, key, modifiers)
@@ -304,7 +353,10 @@ fn on_input_key(
     key: gtk::gdk::Key,
     modifiers: gtk::gdk::ModifierType,
 ) -> glib::Propagation {
-    let enter = key == gtk::gdk::Key::Return || key == gtk::gdk::Key::KP_Enter;
+    let enter = matches!(
+        key,
+        gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter | gtk::gdk::Key::ISO_Enter
+    );
     if !enter || modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK) {
         return glib::Propagation::Proceed;
     }
@@ -482,9 +534,34 @@ fn send(ctx: &Rc<Ctx>) {
     }
     let text = buffer_text(&ctx.widgets.input.buffer());
     if text.trim().is_empty() {
+        set_status(&ctx.widgets, "Write a message, then press Enter.");
         return;
     }
+    if crate::talk::route_typed(ctx, &text) {
+        return;
+    }
+    dispatch_chat(ctx, text);
+}
+
+pub(crate) fn dispatch_chat(ctx: &Rc<Ctx>, text: String) {
+    if ctx.model.borrow().busy {
+        set_status(&ctx.widgets, "A reply is still running.");
+        return;
+    }
+    crate::talk::cancel(ctx);
     ctx.widgets.input.buffer().set_text("");
+    {
+        let mut model = ctx.model.borrow_mut();
+        model.draft = text.clone();
+        model.outgoing = true;
+        model.busy = true;
+        model.pending.clear();
+    }
+    append_outgoing(&ctx.widgets.transcript, &text);
+    ctx.widgets.live.set_text("");
+    clear_sources(&ctx.widgets.sources);
+    ctx.widgets.entity.dispatch(EntityEvent::RequestStarted);
+    set_status(&ctx.widgets, "Sending…");
     let provider_id = ctx.model.borrow().provider_id.clone();
     let conversation_id = ctx
         .model
@@ -492,20 +569,16 @@ fn send(ctx: &Rc<Ctx>) {
         .conversation_id
         .clone()
         .unwrap_or_default();
-    {
-        let mut model = ctx.model.borrow_mut();
-        model.busy = true;
-        model.pending.clear();
-    }
-    ctx.widgets.live.set_text("");
-    clear_sources(&ctx.widgets.sources);
-    ctx.widgets.entity.dispatch(EntityEvent::RequestStarted);
-    set_status(&ctx.widgets, "Sending…");
-    ctx.command(Command::Send {
+    let command = Command::Send {
         conversation_id,
         provider_id,
         text,
-    });
+    };
+    if ctx.cmd.try_send(command).is_err() {
+        set_status(&ctx.widgets, "The background connection is closed.");
+        restore_draft(ctx);
+        reload_transcript(ctx);
+    }
 }
 
 fn stop(ctx: &Ctx) {
@@ -615,6 +688,8 @@ fn on_ui(ctx: &Rc<Ctx>, msg: UiMsg) {
         UiMsg::DeletedAll => on_deleted_all(ctx),
         UiMsg::ShutdownDone => on_shutdown(ctx),
         UiMsg::Memories(notes) => crate::notes::show(ctx, &notes),
+        UiMsg::Transcript(transcript) => crate::talk::on_transcript(ctx, transcript),
+        UiMsg::Speech(wav) => crate::talk::on_speech(ctx, wav),
     }
 }
 
@@ -626,7 +701,7 @@ fn on_connected(ctx: &Ctx) {
     ctx.widgets.entity.dispatch(EntityEvent::Initialized);
     set_status(
         &ctx.widgets,
-        "Connected. Enter sends. Shift+Enter inserts a newline.",
+        "Connected. Enter sends. Shift+Enter inserts a newline. Talk listens only while it is on.",
     );
     ctx.command(Command::ListProviders);
     ctx.command(Command::ListConversations {
@@ -635,11 +710,17 @@ fn on_connected(ctx: &Ctx) {
 }
 
 fn on_failed(ctx: &Ctx, text: &str) {
+    let outgoing = ctx.model.borrow().outgoing;
     ctx.model.borrow_mut().busy = false;
+    ctx.model.borrow_mut().outgoing = false;
+    restore_draft(ctx);
     ctx.widgets
         .entity
         .dispatch(EntityEvent::RequestFailed { recoverable: true });
     set_status(&ctx.widgets, text);
+    if outgoing {
+        reload_transcript(ctx);
+    }
 }
 
 fn on_started(ctx: &Ctx, request_id: String, conversation_id: String) {
@@ -651,6 +732,8 @@ fn on_started(ctx: &Ctx, request_id: String, conversation_id: String) {
         model.request_id = Some(request_id);
         model.conversation_id = Some(conversation_id.clone());
         model.busy = true;
+        model.draft.clear();
+        model.outgoing = false;
         std::mem::take(&mut model.pending)
     };
     for item in pending {
@@ -846,6 +929,10 @@ fn on_providers(ctx: &Rc<Ctx>, providers: Vec<ProviderConfig>) {
             && provider.kind == ProviderKind::Ollama
             && provider.model.trim().is_empty()
     });
+    let discover = providers
+        .iter()
+        .any(|provider| provider.id == keep && provider.kind == ProviderKind::Ollama);
+    let discover_id = keep.clone();
     let mut model = ctx.model.borrow_mut();
     model.providers = providers;
     model.provider_id = keep;
@@ -856,6 +943,10 @@ fn on_providers(ctx: &Rc<Ctx>, providers: Vec<ProviderConfig>) {
             "Choose a local model. Nothing is downloaded until you approve a tag.",
         );
         crate::setup::open(ctx);
+        return;
+    }
+    if discover {
+        ctx.command(Command::Discover { id: discover_id });
     }
 }
 
@@ -1025,6 +1116,66 @@ fn scroll_to_end(view: &gtk::TextView) {
 
 pub(crate) fn set_status(widgets: &Widgets, text: &str) {
     widgets.status.set_text(text);
+}
+
+pub(crate) fn selected_kind(ctx: &Ctx) -> ModelKind {
+    let model = ctx.model.borrow();
+    let name = model
+        .providers
+        .iter()
+        .find(|provider| provider.id == model.provider_id)
+        .map(|provider| provider.model.as_str())
+        .unwrap_or("");
+    if let Some(found) = model.installed.iter().find(|item| item.name == name) {
+        return kind_of(found);
+    }
+    model_kind(&[], name)
+}
+
+pub(crate) fn provider_name(ctx: &Ctx) -> String {
+    let model = ctx.model.borrow();
+    model
+        .providers
+        .iter()
+        .find(|provider| provider.id == model.provider_id)
+        .map(|provider| provider.model.clone())
+        .unwrap_or_default()
+}
+
+pub(crate) fn current_provider_id(ctx: &Ctx) -> String {
+    let id = ctx.model.borrow().provider_id.clone();
+    if id.is_empty() {
+        return "ollama".to_string();
+    }
+    id
+}
+
+pub(crate) fn restore_draft(ctx: &Ctx) {
+    let draft = ctx.model.borrow().draft.clone();
+    ctx.model.borrow_mut().draft.clear();
+    ctx.model.borrow_mut().busy = false;
+    ctx.model.borrow_mut().outgoing = false;
+    if draft.is_empty() {
+        return;
+    }
+    if buffer_text(&ctx.widgets.input.buffer()).trim().is_empty() {
+        ctx.widgets.input.buffer().set_text(&draft);
+    }
+}
+
+fn reload_transcript(ctx: &Ctx) {
+    let id = ctx.model.borrow().conversation_id.clone();
+    match id {
+        Some(conversation_id) => ctx.command(Command::GetMessages { conversation_id }),
+        None => ctx.widgets.transcript.buffer().set_text(""),
+    }
+}
+
+fn append_outgoing(view: &gtk::TextView, text: &str) {
+    let buffer = view.buffer();
+    let mut end = buffer.end_iter();
+    buffer.insert(&mut end, &format!("You\n{text}\n\n"));
+    scroll_to_end(view);
 }
 
 fn button(label: &str) -> gtk::Button {

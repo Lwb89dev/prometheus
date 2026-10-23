@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use adw::prelude::*;
 use gtk::glib;
-use lda_common::{is_catalog_model, DiscoveryReport, ProviderConfig, ProviderKind};
+use lda_common::{is_catalog_model, kind_of, DiscoveryReport, ProviderConfig, ProviderKind};
 
 use crate::bus::Command;
 use crate::window::{set_status, Ctx};
@@ -70,6 +70,7 @@ pub fn open(ctx: &Rc<Ctx>) {
 }
 
 pub fn show(ctx: &Ctx, report: &DiscoveryReport) {
+    ctx.model.borrow_mut().installed = report.installed.clone();
     let Some(installed) = ctx.model.borrow().installed_list.clone() else {
         return;
     };
@@ -131,7 +132,12 @@ fn fill_installed(list: &gtk::ListBox, report: &DiscoveryReport) {
             Some(false) => "no native tools reported",
             None => "tools unknown",
         };
-        let mut label = format!("{}\n{tools}. {}", model.name, size_label(model.size_bytes));
+        let mut label = format!(
+            "{}\n{}. {tools}. {}",
+            model.name,
+            kind_of(model).label(),
+            size_label(model.size_bytes)
+        );
         if model.name.ends_with(":latest") {
             label.push_str(" Tag :latest can change.");
         }
@@ -221,7 +227,15 @@ fn save_model(ctx: &Ctx, name: &str) {
     };
     ctx.model.borrow_mut().provider_id = provider.id;
     ctx.command(Command::UpsertProvider { json });
-    set_status(&ctx.widgets, &format!("Using {name}."));
+    let note = ctx
+        .model
+        .borrow()
+        .installed
+        .iter()
+        .find(|item| item.name == name)
+        .map(|item| kind_of(item).label())
+        .unwrap_or("saved");
+    set_status(&ctx.widgets, &format!("Using {name} ({note})."));
     if let Some(dialog) = ctx.model.borrow().setup_dialog.clone() {
         dialog.close();
     }
@@ -251,6 +265,9 @@ fn clear_setup(ctx: &Ctx) {
     model.suggestion_list = None;
     model.setup_notice = None;
     model.setup_dialog = None;
+    drop(model);
+    ctx.widgets.window.present();
+    ctx.widgets.input.grab_focus();
 }
 
 fn selected_name(list: &gtk::ListBox) -> Option<String> {

@@ -2,7 +2,8 @@
 //!
 //! Global shortcuts and layer-shell are reported only when the portal or the
 //! library is present. This crate does not register Super+Space by itself.
-//! Voice capture is not linked. The microphone stays closed.
+//! Voice capture is push-to-talk. The microphone stays closed until
+//! `Capture::start`.
 
 #![forbid(unsafe_code)]
 
@@ -10,7 +11,7 @@ mod portal;
 mod voice;
 
 pub use portal::{notify, open_uri, probe, session_note, HostCaps};
-pub use voice::{NoVoice, VoiceBackend};
+pub use voice::{play_wav, Capture, LocalVoice, NoVoice, VoiceBackend};
 
 use lda_system::{classify_desktop, DesktopProbe};
 

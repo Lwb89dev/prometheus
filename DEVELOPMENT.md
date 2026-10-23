@@ -102,15 +102,61 @@ are not installed, so the RPM spec and the Flatpak manifest were not built.
 unit's `ExecStart` is rewritten to `/usr/bin/lda-daemon`. The copy in
 `packaging/systemd/user/` still points at `~/.local/bin` for a manual install.
 
+## Checked while fixing the chat box and voice routing
+
+Host and session are the same COSMIC Wayland machine. Ollama was 0.30.10 and
+`ollama list` showed only `mistral:latest`. The checks used a temporary
+`--config` and `--data-dir` under `/tmp`. The real `~/.config/lda/config.toml`
+mtime did not change. No model was downloaded. Talk was not clicked, and
+`pw-record` / `parecord` did not start.
+
+`cargo test --workspace --offline` and
+`cargo clippy --workspace --all-targets --offline -- -D warnings` passed
+before the last two GTK edits (return focus to the conversation window, and
+treat ISO Enter like Return). `cargo build -p lda-gtk --offline` succeeded
+after those edits. `cargo test` does not replace `target/debug/lda-gtk` or
+`target/debug/lda-cli`; the live check used binaries from an explicit
+`cargo build`.
+
+Voice, against that temporary daemon:
+
+- `lda-cli transcribe` with `mistral:latest` failed before any chat request:
+  the model does not transcribe speech, and no speech-to-text model is installed.
+- `lda-cli speak` with `mistral:latest` failed the same way: it does not
+  generate speech, and the text was not sent to chat.
+- After reload to `phonon`, `speak` reached the loopback speech endpoint and
+  failed with the Ollama 0.40.9 message. This server has no `/v1/audio/speech`.
+  The daemon log has no `request started` for that call.
+- After reload to `whisper:latest`, `transcribe` posted the wav and Ollama
+  answered `model 'whisper:latest' not found`. It did not start a chat turn.
+- The model was set back to `mistral:latest`. `lda-cli chat` printed `Pong`.
+
+GTK, on the binary that contains “Talk listens only while it is on.”:
+
+- AT-SPI showed the conversation frame active, the message box focused, Talk
+  unchecked, and the connected status that mentions Talk.
+- Activating Send with the sentence
+  `refine-send-7f3a Reply with the single word pong.` cleared the box, stored
+  the user row, and the assistant row was `Pong`.
+- A synthetic Return from AT-SPI did not reach the text view, on the default
+  GDK backend or with `GDK_BACKEND=x11`. This GTK build does not export
+  `gtk_test_widget_send_key`. A physical Enter press was not observed.
+  The controller is capture-phase. GTK 4.14 inserts the newline from the text
+  view’s own key controller, which stays on the bubble phase. The startup focus
+  timer leaves the model dialog alone when that dialog is open. The recorder’s
+  stderr is drained on a side thread so a noisy `pw-record` cannot fill the pipe
+  and stall. A missing wav is reported as an empty recording.
+
 ## Not verified here
 
 - KDE Plasma, XFCE, and X11 sessions. The KDE classification test only checks
   that `tested_here` is false.
-- A click-through of the GTK window, including the Allow dialog, the provider
-  editor, the model dialog, and source links. After the system libadwaita
-  headers were installed, `lda-gtk` stayed up for 4 seconds on this COSMIC
-  Wayland session with an empty stderr log. That launch used a temporary config
-  under `/tmp` and did not click anything.
+- A full click-through of the GTK window, including the Allow dialog, the
+  provider editor, the model dialog, source links, and the Talk button.
+  The later isolated check activated Send and confirmed the message box had
+  focus. It did not press a physical Enter key and it did not open the
+  microphone. The earlier 4-second launch, from when libadwaita headers were
+  installed, did not click anything.
 - Orca or another screen reader.
 - A live SearXNG, a live page on the public internet, or a real Anthropic or
   xAI key.

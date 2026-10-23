@@ -28,7 +28,9 @@ Otherwise the mark stays in a normal GTK window. KDE and XFCE were not run.
 ## Milestone 4 — More hosts and actions
 
 In the tree: Anthropic and xAI on `LlmProvider`, confirmed user actions,
-explicit memories, and `NoVoice`. There is no polkit helper. Packaging recipes
+explicit memories, and push-to-talk. `NoVoice` remains the explicit off
+implementation. A recorder is reported only when `pw-record` or `parecord`
+is on `PATH`. There is no wake word. There is no polkit helper. Packaging recipes
 are `packaging/deb/build.sh`, `packaging/rpm/lda.spec`, and
 `packaging/flatpak/org.linuxdesktopagent.Gtk.yml`. The Flatpak manifest does
 not grant host filesystem access. See `DEVELOPMENT.md` for which of those
@@ -47,6 +49,9 @@ are in `DEVELOPMENT.md`.
   model onboarding. `lda-visual` stays a plain GTK 4 widget. The daemon does
   not link libadwaita.
 - zbus stays at 5.19 until a separate migration has a concrete reason.
+- There is no Milestone 6. Anything still open is a limit named above: a global
+  shortcut, layer-shell, desktops that were not run, polkit, a packaging build,
+  and Orca.
 - New installs do not name a model. Onboarding lists the local Ollama models,
   prefers native tool calling, and suggests concrete tags from free RAM.
   A download waits for an explicit confirmation. `:latest` is not a default.

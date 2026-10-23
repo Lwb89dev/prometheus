@@ -9,15 +9,18 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use lda_common::{
-    config::valid_provider_id, endpoint_is_local, is_catalog_model, new_id, now_ms, private_dir,
-    read_to_string_limited, suggest_for_ram, tighten_file, title_from, ConversationSummary,
-    DiscoveryReport, Error, FileConfig, Message, ProviderConfig, ProviderKind, Result, Role,
-    SendReply, SourceLink, StoredMessage, StreamEvent, ToolRunRecord, MAX_SECRET_CHARS,
-    MAX_USER_CHARS,
+    chat_refused, config::valid_provider_id, endpoint_is_local, is_catalog_model, kind_of,
+    model_kind, new_id, now_ms, pick_transcriber, private_dir, read_to_string_limited,
+    suggest_for_ram, tighten_file, title_from, transcript_next, ConversationSummary,
+    DiscoveryReport, Error, FileConfig, InstalledModel, Message, ModelKind, ProviderConfig,
+    ProviderKind, Result, Role, SendReply, SourceLink, StoredMessage, StreamEvent, ToolRunRecord,
+    Transcript, MAX_AUDIO_BYTES, MAX_SECRET_CHARS, MAX_USER_CHARS,
 };
 use lda_core::{run_turn, AgentEvent, AgentLimits, ConfirmHub, TurnRequest};
 use lda_ipc::{AgentBackend, SignalBus};
-use lda_llm::{build_provider, pull_model, OllamaProvider};
+use lda_llm::{
+    apply_show, build_provider, pull_model, synthesize_speech, transcribe_audio, OllamaProvider,
+};
 use lda_memory::{history_for_model, MemoryGate, Store};
 use lda_security::{preview, resolve_api_key, PermissionPolicy, SecretStore};
 use lda_tools::{agent_registry, ToolRegistry};
@@ -526,6 +529,10 @@ impl AgentBackend for Service {
                 "choose a model before sending. The daemon does not pick one.".into(),
             ));
         }
+        let kind = kind_for(self, &provider).await;
+        if !kind.chat {
+            return Err(Error::InvalidInput(chat_refused(&provider.model, kind)));
+        }
         let conversation_id = self.ensure_conversation(conversation_id, &provider, text)?;
         self.append_message(&conversation_id, &Message::text(Role::User, text))?;
         let request_id = new_id();
@@ -776,6 +783,14 @@ impl AgentBackend for Service {
 
     async fn forget_memory(&self, id: &str) -> Result<()> {
         self.memory.forget(id)
+    }
+
+    async fn transcribe(&self, provider_id: &str, wav: &[u8]) -> Result<String> {
+        transcribe(self, provider_id, wav).await
+    }
+
+    async fn synthesize(&self, provider_id: &str, text: &str) -> Result<Vec<u8>> {
+        synthesize(self, provider_id, text).await
     }
 }
 
@@ -1119,6 +1134,121 @@ fn warn_if_remote(provider: &ProviderConfig) {
     }
 }
 
+fn ollama_for(service: &Service, provider: &ProviderConfig) -> OllamaProvider {
+    OllamaProvider {
+        id: provider.id.clone(),
+        endpoint: provider.endpoint.clone(),
+        http: service.client_for(provider),
+    }
+}
+
+async fn kind_for(service: &Service, provider: &ProviderConfig) -> ModelKind {
+    if provider.kind != ProviderKind::Ollama {
+        return model_kind(&[], &provider.model);
+    }
+    let shown = ollama_for(service, provider)
+        .show(&provider.model)
+        .await
+        .ok();
+    let Some(body) = shown else {
+        return model_kind(&[], &provider.model);
+    };
+    let mut model = blank_model(&provider.model);
+    apply_show(&mut model, &body);
+    if model.capabilities.is_empty() {
+        return model_kind(&[], &provider.model);
+    }
+    model_kind(&model.capabilities, &provider.model)
+}
+
+fn blank_model(name: &str) -> InstalledModel {
+    InstalledModel {
+        name: name.to_string(),
+        size_bytes: 0,
+        family: String::new(),
+        parameter_size: String::new(),
+        tools: None,
+        capabilities: Vec::new(),
+    }
+}
+
+fn require_local_voice(provider: &ProviderConfig) -> Result<()> {
+    if !endpoint_is_local(&provider.endpoint) {
+        return Err(Error::InvalidInput(
+            "the microphone stays on this computer. A remote provider is not sent audio.".into(),
+        ));
+    }
+    if provider.kind != ProviderKind::Ollama && provider.kind != ProviderKind::OpenaiCompatible {
+        return Err(Error::InvalidInput(
+            "voice uses a local Ollama or OpenAI-compatible server.".into(),
+        ));
+    }
+    if provider.model.trim().is_empty() {
+        return Err(Error::InvalidInput(
+            "choose a model before using the microphone. The daemon does not pick one.".into(),
+        ));
+    }
+    Ok(())
+}
+
+async fn transcribe(service: &Service, provider_id: &str, wav: &[u8]) -> Result<String> {
+    if wav.len() > MAX_AUDIO_BYTES {
+        return Err(Error::InvalidInput("recording is too long".into()));
+    }
+    let provider = service.provider_config(provider_id)?;
+    require_local_voice(&provider)?;
+    let installed = installed_for_voice(service, &provider).await?;
+    let stt_name = pick_transcriber(&provider.model, &installed).map_err(Error::InvalidInput)?;
+    let selected = installed
+        .iter()
+        .find(|model| model.name == provider.model)
+        .map(kind_of)
+        .unwrap_or_else(|| model_kind(&[], &provider.model));
+    let text = transcribe_audio(
+        &service.client_for(&provider),
+        &provider.endpoint,
+        &stt_name,
+        wav,
+    )
+    .await?;
+    let reply = Transcript {
+        text,
+        model: stt_name,
+        follow_up: transcript_next(selected).as_str().to_string(),
+    };
+    to_json(&reply)
+}
+
+async fn installed_for_voice(
+    service: &Service,
+    provider: &ProviderConfig,
+) -> Result<Vec<InstalledModel>> {
+    if provider.kind != ProviderKind::Ollama {
+        return Ok(vec![blank_model(&provider.model)]);
+    }
+    let (models, _) = ollama_for(service, provider).describe_models().await?;
+    Ok(models)
+}
+
+async fn synthesize(service: &Service, provider_id: &str, text: &str) -> Result<Vec<u8>> {
+    let provider = service.provider_config(provider_id)?;
+    require_local_voice(&provider)?;
+    let kind = kind_for(service, &provider).await;
+    if !kind.speak {
+        return Err(Error::InvalidInput(format!(
+            "{} does not generate speech. A conversation model was not asked to chat in its place.",
+            provider.model
+        )));
+    }
+    synthesize_speech(
+        &service.client_for(&provider),
+        &provider.endpoint,
+        &provider.model,
+        text,
+    )
+    .await
+}
+
 fn build_http(local_only: bool) -> Result<reqwest::Client> {
     let mut builder = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(5))
@@ -1167,6 +1297,25 @@ mod tests {
             .await
             .is_err());
         assert!(service.send_message("", "ollama", "   ").await.is_err());
+        let speech = r#"{"id":"voice","kind":"ollama","endpoint":"http://127.0.0.1:11434","model":"phonon"}"#;
+        service.upsert_provider(speech).await.unwrap();
+        let refused = service
+            .send_message("", "voice", "hello")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains("does not take a chat"), "{refused}");
+        let heard = r#"{"id":"stt","kind":"ollama","endpoint":"http://127.0.0.1:11434","model":"whisper:latest"}"#;
+        service.upsert_provider(heard).await.unwrap();
+        let stt_refused = service
+            .send_message("", "stt", "hello")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            stt_refused.contains("does not take a chat"),
+            "{stt_refused}"
+        );
         assert!(service
             .remember("The printer is on the desk.")
             .await

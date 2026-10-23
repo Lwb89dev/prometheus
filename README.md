@@ -46,8 +46,12 @@ Version 0.2.0. Milestone 0 and 1 behavior is still there, plus the pieces below.
   libadwaita is used by the GTK client only.
 - No package install or removal, no service start or stop, no journal tool,
   and no polkit helper.
-- No voice capture. `NoVoice` reports the microphone as unavailable. The window
-  has no button that pretends to listen.
+- **Talk** is push-to-talk. The microphone opens only while Talk is on, and
+  closes on the next click, after 30 seconds, or when the window closes.
+  There is no wake word. A conversation model takes typed chat. A
+  speech-to-text model transcribes. A speech model is read aloud and is not
+  sent a chat. Microphone audio stays on a loopback server. `NoVoice` remains
+  an off switch that does not spawn a recorder.
 - Web search has no default public endpoint. Page fetch refuses loopback,
   private, link-local, and metadata addresses unless `allow_private_fetch` is
   set. That flag is for a test you choose, not a default.
@@ -90,6 +94,17 @@ Start the daemon yourself, or let the window start it. The first launch writes
 a default config that points at Ollama on `127.0.0.1:11434` and leaves `model`
 empty. The window lists installed models and does not download one until you
 confirm a suggested tag. Open **Models** again later to change the saved name.
+
+From a desktop session, `./run.sh` builds the three debug binaries, stops a
+daemon that already owns the session bus, starts `ollama serve` when the
+`ollama` command exists but is not answering, and opens the window. Arguments
+after the script name are passed to `lda-gtk`.
+
+```bash
+./run.sh
+```
+
+The same programs can be started by hand:
 
 ```bash
 cargo run -p lda-daemon
