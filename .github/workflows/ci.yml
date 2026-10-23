@@ -16,8 +16,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - name: Install GTK 4 and SQLite headers
-        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev pkg-config libsqlite3-dev
+      - name: Install GTK 4, libadwaita, and SQLite headers
+        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev libadwaita-1-dev pkg-config libsqlite3-dev
       - name: Format
         run: cargo fmt --all -- --check
       - name: Clippy

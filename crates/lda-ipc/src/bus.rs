@@ -118,6 +118,24 @@ impl AgentObject {
             .map_err(dbus_err)
     }
 
+    async fn discover_models(&self, provider_id: &str) -> fdo::Result<String> {
+        self.backend
+            .discover_models(provider_id)
+            .await
+            .map_err(dbus_err)
+    }
+
+    async fn start_model_pull(&self, provider_id: &str, model_name: &str) -> fdo::Result<String> {
+        self.backend
+            .start_model_pull(provider_id, model_name)
+            .await
+            .map_err(dbus_err)
+    }
+
+    async fn model_pull_status(&self) -> fdo::Result<String> {
+        self.backend.model_pull_status().await.map_err(dbus_err)
+    }
+
     async fn system_snapshot(&self) -> fdo::Result<String> {
         self.backend.system_snapshot().await.map_err(dbus_err)
     }
@@ -219,6 +237,12 @@ pub trait Agent {
     fn secret_status(&self, provider_id: &str) -> zbus::Result<String>;
 
     fn list_models(&self, provider_id: &str) -> zbus::Result<String>;
+
+    fn discover_models(&self, provider_id: &str) -> zbus::Result<String>;
+
+    fn start_model_pull(&self, provider_id: &str, model_name: &str) -> zbus::Result<String>;
+
+    fn model_pull_status(&self) -> zbus::Result<String>;
 
     fn system_snapshot(&self) -> zbus::Result<String>;
 
@@ -334,6 +358,18 @@ mod tests {
 
         async fn list_models(&self, _provider_id: &str) -> Result<String> {
             Ok("[]".to_string())
+        }
+
+        async fn discover_models(&self, _provider_id: &str) -> Result<String> {
+            Ok(r#"{"installed":[],"suggestions":[],"ram_mib":0,"notice":""}"#.to_string())
+        }
+
+        async fn start_model_pull(&self, _provider_id: &str, _model_name: &str) -> Result<String> {
+            Ok(r#"{"phase":"idle","name":"","detail":""}"#.to_string())
+        }
+
+        async fn model_pull_status(&self) -> Result<String> {
+            Ok(r#"{"phase":"idle","name":"","detail":""}"#.to_string())
         }
 
         async fn system_snapshot(&self) -> Result<String> {

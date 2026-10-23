@@ -1,9 +1,10 @@
 # Linux Desktop Agent
 
 Linux Desktop Agent (LDA) is a local personal assistant for Linux desktops.
-A user-level daemon talks to a local or OpenAI-compatible model. A GTK 4 window
-streams the reply, and read-only system tools can answer questions about the
-machine you are actually running.
+A user-level daemon talks to a local or OpenAI-compatible model. A GTK 4 and
+libadwaita window streams the reply, and read-only system tools can answer
+questions about the machine you are actually running. The animated mark stays
+a separate GTK 4 widget. The daemon does not link libadwaita.
 
 The name, icon, and colors are ordinary files. Replace them without touching
 the agent.
@@ -42,7 +43,7 @@ Version 0.2.0. Milestone 0 and 1 behavior is still there, plus the pieces below.
 - No layer-shell overlay. `gtk4-layer-shell-0` was not installed, so the mark
   stays in a normal window.
 - KDE Plasma and XFCE were not run. COSMIC is not treated as GNOME.
-- No libadwaita. The UI is GTK 4.
+  libadwaita is used by the GTK client only.
 - No package install or removal, no service start or stop, no journal tool,
   and no polkit helper.
 - No voice capture. `NoVoice` reports the microphone as unavailable. The window
@@ -68,10 +69,11 @@ See [ROADMAP.md](ROADMAP.md) and [SECURITY.md](SECURITY.md).
 ## Build
 
 You need Rust stable (1.85 or newer; gtk4 0.11 wants a current stable),
-`pkg-config`, GTK 4.14 development files, and SQLite development files.
+`pkg-config`, GTK 4.14 development files, libadwaita 1.5 development files,
+and SQLite development files.
 
 ```bash
-sudo apt install libgtk-4-dev pkg-config libsqlite3-dev
+sudo apt install libgtk-4-dev libadwaita-1-dev pkg-config libsqlite3-dev
 cargo build --workspace
 cargo test --workspace
 ```
@@ -85,8 +87,9 @@ Binaries:
 ## Run
 
 Start the daemon yourself, or let the window start it. The first launch writes
-a default config that points at Ollama on `127.0.0.1:11434` with model
-`mistral:latest`.
+a default config that points at Ollama on `127.0.0.1:11434` and leaves `model`
+empty. The window lists installed models and does not download one until you
+confirm a suggested tag. Open **Models** again later to change the saved name.
 
 ```bash
 cargo run -p lda-daemon
@@ -139,7 +142,7 @@ is the only writer of that file. A field named `api_key` is rejected.
 id = "ollama"
 kind = "ollama"
 endpoint = "http://127.0.0.1:11434"
-model = "mistral:latest"
+model = "qwen2.5:7b"
 temperature = 0.2
 timeout_secs = 180
 context_messages = 20
@@ -147,6 +150,11 @@ context_window = 8192
 share_system_context = true
 tool_calling = "auto"
 ```
+
+The sample `model` above is a name you chose. A generated file uses `model = ""`
+until onboarding saves one. `lda-cli discover` prints installed models and
+suggestions. `lda-cli pull qwen2.5:7b` downloads that catalog tag through
+loopback Ollama after you run the command.
 
 `kind` is `ollama`, `openai_compatible`, `anthropic`, or `xai`. Anthropic uses
 the Messages API (`x-api-key` and `anthropic-version`), not a bearer token.

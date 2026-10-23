@@ -131,7 +131,8 @@ not exercised here.
 `lda-visual` draws a procedural mark from a state machine. The GTK host creates
 one `EntityWidget` and forwards events that have already happened: connection,
 request accepted, stream deltas, tool events, cancellation, and shutdown.
-The widget does not invent those events. Voice reactivity is off unless the
+The widget does not invent those events. It is a custom GTK 4 drawing widget
+and does not link libadwaita. Voice reactivity is off unless the
 host sets `voice_reactivity` and feeds a level. The crate does not open a
 microphone.
 
@@ -145,6 +146,28 @@ clamp it to the work area. This milestone shows the mark in a normal GTK window.
 `available` is false. The GTK window does not open a microphone and does not
 show a control that claims to listen. A later local backend can implement the
 trait with push-to-talk. Do not enable an always-on microphone by default.
+
+## Decisions
+
+The conversation window, provider editor, and local-model onboarding use
+GTK 4 and libadwaita. That dependency stops at `lda-gtk`. The daemon, the
+agent loop, the providers, and the tools do not link libadwaita or GTK.
+`lda-visual` links GTK 4 for the drawing widget and does not link
+libadwaita. A later KDE, COSMIC, or XFCE client can keep the same bus API.
+
+zbus stays on 5.19. A move to zbus 6 is a separate change, done when the API
+difference or a maintenance issue justifies it. It is not mixed into UI work.
+
+There is no hard-coded model name. A new configuration leaves the Ollama
+`model` field empty. The window asks which installed model to use. Discovery
+reads the configured Ollama server, asks each model for its capability list,
+and sorts native tool calling ahead of unknown and then ahead of models that
+reported no tools. A `:latest` tag sorts after a concrete tag and is never
+written as the generated default. Suggestions are concrete catalog tags sized
+against free RAM. A download runs only after the user confirms one of those
+tags, and only against the loopback Ollama server. The chosen name is saved
+in `config.toml`. The daemon does not switch models by itself and does not
+call a cloud provider until that provider is saved and a message is sent to it.
 
 ## Logging
 

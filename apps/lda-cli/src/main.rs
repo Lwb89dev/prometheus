@@ -76,6 +76,17 @@ enum Commands {
         #[arg(short, long, default_value = "")]
         provider: String,
     },
+    /// Inspect the local Ollama server and suggest concrete tags for this machine.
+    Discover {
+        #[arg(short, long, default_value = "ollama")]
+        provider: String,
+    },
+    /// Download one suggested tag through the loopback Ollama server.
+    Pull {
+        model: String,
+        #[arg(short, long, default_value = "ollama")]
+        provider: String,
+    },
     /// List notes the user explicitly saved.
     Memories,
     /// Store one note. Persistent memory must be enabled in the configuration.
@@ -123,6 +134,14 @@ async fn dispatch(cli: Cli) -> Result<()> {
         Commands::Models { provider } => {
             print_json(&proxy().await?.list_models(&provider).await.map_err(ipc)?)
         }
+        Commands::Discover { provider } => print_json(
+            &proxy()
+                .await?
+                .discover_models(&provider)
+                .await
+                .map_err(ipc)?,
+        ),
+        Commands::Pull { model, provider } => pull(&provider, &model).await,
         Commands::Memories => print_json(&proxy().await?.list_memories().await.map_err(ipc)?),
         Commands::Remember { text } => {
             print_json(&proxy().await?.remember(&text).await.map_err(ipc)?)
@@ -138,6 +157,35 @@ async fn proxy() -> Result<AgentProxy<'static>> {
             "{err}. Start lda-daemon, or start lda-gtk once so it can launch the daemon."
         ))
     })
+}
+
+async fn pull(provider: &str, model: &str) -> Result<()> {
+    let proxy = proxy().await?;
+    println!(
+        "{}",
+        proxy.start_model_pull(provider, model).await.map_err(ipc)?
+    );
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        let raw = proxy.model_pull_status().await.map_err(ipc)?;
+        let value: Value =
+            serde_json::from_str(&raw).map_err(|err| Error::Other(err.to_string()))?;
+        let phase = value.get("phase").and_then(Value::as_str).unwrap_or("");
+        let detail = value.get("detail").and_then(Value::as_str).unwrap_or("");
+        println!("{detail}");
+        if phase == "running" {
+            continue;
+        }
+        if phase == "succeeded" {
+            return Ok(());
+        }
+        let message = if detail.is_empty() {
+            "download failed".to_string()
+        } else {
+            detail.to_string()
+        };
+        return Err(Error::Other(message));
+    }
 }
 
 async fn status() -> Result<()> {

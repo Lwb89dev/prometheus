@@ -8,8 +8,10 @@ Checked on the machine where Milestone 0 and 1 were implemented:
 - Session: COSMIC on Wayland (`XDG_CURRENT_DESKTOP=COSMIC`, `XDG_SESSION_TYPE=wayland`)
 - Rust stable via rustup. `rust-toolchain.toml` asks for rustfmt and clippy.
   The first Cargo command may install those components under `~/.rustup`.
-- GTK 4.14 development files were present. `libadwaita-1-dev` was not, so the
-  UI does not use libadwaita.
+- GTK 4.14 development files were present. The GTK client depends on
+  libadwaita 1.5. `libadwaita-1-dev` 1.5.0, `libadwaita-1-0` 1.5.0, and
+  `libappstream-dev` are installed. `cargo build -p lda-gtk` succeeds against
+  those system headers.
 - SQLite and D-Bus headers were present. `rusqlite` links the system library.
 - Ollama was installed and listed `mistral:latest` with a `tools` capability.
 - The secret service name `org.freedesktop.secrets` was on the session bus.
@@ -29,8 +31,8 @@ cargo test --workspace
 
 GTK unit tests must not call `gtk::init`. The markdown test only checks span
 extraction. CI is `.github/workflows/ci.yml` on Ubuntu 24.04 with
-`libgtk-4-dev`, `pkg-config`, and `libsqlite3-dev`. It does not install
-libadwaita. The IPC test uses a peer-to-peer socket and does not need a session bus.
+`libgtk-4-dev`, `libadwaita-1-dev`, `pkg-config`, and `libsqlite3-dev`.
+The IPC test uses a peer-to-peer socket and does not need a session bus.
 
 ## Live check without touching the real config
 
@@ -52,8 +54,9 @@ a `tool` fence instead of a native tool call still satisfies the loop when
 
 ## Libraries pinned on purpose
 
-- `zbus` is exactly 5.19. zbus 6 changed the connection builder. Stay on 5
-  until a deliberate port.
+- `zbus` is exactly 5.19. zbus 6 changed the connection builder. The port stays
+  deferred until there is a concrete API, maintenance, or security reason.
+  Do not combine it with UI work.
 - `gtk4` 0.11 with feature `v4_14` only. Do not enable `v4_16` on a 4.14 system.
 - `reqwest` uses rustls, not OpenSSL.
 - `rusqlite` uses the system SQLite. If that fails to link, switch that crate
@@ -103,12 +106,15 @@ unit's `ExecStart` is rewritten to `/usr/bin/lda-daemon`. The copy in
 
 - KDE Plasma, XFCE, and X11 sessions. The KDE classification test only checks
   that `tested_here` is false.
-- A click-through of the GTK window, including the Allow dialog and source links.
+- A click-through of the GTK window, including the Allow dialog, the provider
+  editor, the model dialog, and source links. After the system libadwaita
+  headers were installed, `lda-gtk` stayed up for 4 seconds on this COSMIC
+  Wayland session with an empty stderr log. That launch used a temporary config
+  under `/tmp` and did not click anything.
 - Orca or another screen reader.
 - A live SearXNG, a live page on the public internet, or a real Anthropic or
   xAI key.
 - `open_uri`, `open_directory`, and `open_application` against this desktop.
   The confirmation decision is covered by a scripted provider test.
 - Install of the systemd user unit, the D-Bus service file, or the desktop entry.
-- libadwaita.
 - An RPM build or a Flatpak build.

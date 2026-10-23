@@ -41,8 +41,12 @@ transcript, message box, search field, and source list have accessible names.
 Orca was not run. The startup measurement and the desktops that were not run
 are in `DEVELOPMENT.md`.
 
-## Decisions still open
+## Decisions
 
-- Install `libadwaita-1-dev` and move the window to libadwaita, or stay on GTK 4.
-- Port from zbus 5.19 to zbus 6, or stay on the pin.
-- Whether the default local model name should stay `mistral:latest`.
+- The GTK client uses libadwaita for the conversation window, providers, and
+  model onboarding. `lda-visual` stays a plain GTK 4 widget. The daemon does
+  not link libadwaita.
+- zbus stays at 5.19 until a separate migration has a concrete reason.
+- New installs do not name a model. Onboarding lists the local Ollama models,
+  prefers native tool calling, and suggests concrete tags from free RAM.
+  A download waits for an explicit confirmation. `:latest` is not a default.

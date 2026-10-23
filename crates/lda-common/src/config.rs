@@ -199,7 +199,7 @@ impl Default for FileConfig {
                 id: "ollama".to_string(),
                 kind: ProviderKind::Ollama,
                 endpoint: DEFAULT_OLLAMA_ENDPOINT.to_string(),
-                model: "mistral:latest".to_string(),
+                model: String::new(),
                 temperature: Some(0.2),
                 timeout_secs: default_timeout(),
                 context_messages: default_context_messages(),
@@ -257,7 +257,10 @@ pub fn validate_provider(provider: &ProviderConfig) -> Result<()> {
         ));
     }
     crate::endpoint::parse_endpoint(&provider.endpoint)?;
-    if provider.model.trim().is_empty() || provider.model.len() > 256 {
+    if provider.model.len() > 256 {
+        return Err(Error::InvalidInput("model id is too long".into()));
+    }
+    if provider.model.trim().is_empty() && !provider.model.is_empty() {
         return Err(Error::InvalidInput("model id is empty or too long".into()));
     }
     if provider.model.chars().any(|c| c.is_control()) {
@@ -370,6 +373,9 @@ mod tests {
         assert!(!text.contains("api_key"));
         let parsed = FileConfig::parse(&text).unwrap();
         assert_eq!(parsed.providers[0].id, "ollama");
+        assert!(parsed.providers[0].model.is_empty());
+        assert!(!text.contains("mistral"));
+        assert!(!text.contains(":latest"));
         assert!(parsed.providers[0].share_system_context);
     }
 

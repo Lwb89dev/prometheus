@@ -9,20 +9,21 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use lda_common::{
-    config::valid_provider_id, endpoint_is_local, new_id, now_ms, private_dir,
-    read_to_string_limited, tighten_file, title_from, ConversationSummary, Error, FileConfig,
-    Message, ProviderConfig, ProviderKind, Result, Role, SendReply, SourceLink, StoredMessage,
-    StreamEvent, ToolRunRecord, MAX_SECRET_CHARS, MAX_USER_CHARS,
+    config::valid_provider_id, endpoint_is_local, is_catalog_model, new_id, now_ms, private_dir,
+    read_to_string_limited, suggest_for_ram, tighten_file, title_from, ConversationSummary,
+    DiscoveryReport, Error, FileConfig, Message, ProviderConfig, ProviderKind, Result, Role,
+    SendReply, SourceLink, StoredMessage, StreamEvent, ToolRunRecord, MAX_SECRET_CHARS,
+    MAX_USER_CHARS,
 };
 use lda_core::{run_turn, AgentEvent, AgentLimits, ConfirmHub, TurnRequest};
 use lda_ipc::{AgentBackend, SignalBus};
-use lda_llm::build_provider;
+use lda_llm::{build_provider, pull_model, OllamaProvider};
 use lda_memory::{history_for_model, MemoryGate, Store};
 use lda_security::{preview, resolve_api_key, PermissionPolicy, SecretStore};
 use lda_tools::{agent_registry, ToolRegistry};
 use lda_web::WebClient;
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -48,6 +49,23 @@ pub struct Service {
     signals: SignalBus,
     stop: Notify,
     secret_warned: AtomicBool,
+    pull: Mutex<PullJob>,
+}
+
+struct PullJob {
+    phase: String,
+    name: String,
+    detail: String,
+}
+
+impl PullJob {
+    fn idle() -> Self {
+        Self {
+            phase: "idle".to_string(),
+            name: String::new(),
+            detail: String::new(),
+        }
+    }
 }
 
 struct Ephemeral {
@@ -112,6 +130,7 @@ impl Service {
             signals: SignalBus::default(),
             stop: Notify::new(),
             secret_warned: AtomicBool::new(false),
+            pull: Mutex::new(PullJob::idle()),
         });
         Ok(service)
     }
@@ -502,6 +521,11 @@ impl AgentBackend for Service {
     ) -> Result<String> {
         validate_user_text(text)?;
         let provider = self.provider_config(provider_id)?;
+        if provider.model.trim().is_empty() {
+            return Err(Error::InvalidInput(
+                "choose a model before sending. The daemon does not pick one.".into(),
+            ));
+        }
         let conversation_id = self.ensure_conversation(conversation_id, &provider, text)?;
         self.append_message(&conversation_id, &Message::text(Role::User, text))?;
         let request_id = new_id();
@@ -622,6 +646,93 @@ impl AgentBackend for Service {
         let built = build_provider(&provider, self.client_for(&provider), key);
         let models = built.list_models().await?;
         to_json(&models)
+    }
+
+    async fn discover_models(&self, provider_id: &str) -> Result<String> {
+        let provider = self.provider_config(provider_id)?;
+        if provider.kind != ProviderKind::Ollama {
+            return Err(Error::InvalidInput(
+                "model discovery reads the configured Ollama server. Cloud providers are not contacted.".into(),
+            ));
+        }
+        let ram_mib = tokio::task::spawn_blocking(available_ram_mib)
+            .await
+            .map_err(|err| Error::Other(err.to_string()))?;
+        let ollama = OllamaProvider {
+            id: provider.id.clone(),
+            endpoint: provider.endpoint.clone(),
+            http: self.client_for(&provider),
+        };
+        let (installed, notice) = match ollama.describe_models().await {
+            Ok((models, truncated)) => {
+                let notice = if truncated {
+                    "Showing the first 24 names from Ollama.".to_string()
+                } else {
+                    String::new()
+                };
+                (models, notice)
+            }
+            Err(err) => (Vec::new(), format!("Ollama did not list models: {err}")),
+        };
+        let names: Vec<String> = installed.iter().map(|model| model.name.clone()).collect();
+        let report = DiscoveryReport {
+            suggestions: suggest_for_ram(ram_mib, &names),
+            installed,
+            ram_mib,
+            notice,
+        };
+        to_json(&report)
+    }
+
+    async fn start_model_pull(&self, provider_id: &str, model_name: &str) -> Result<String> {
+        if !is_catalog_model(model_name) {
+            return Err(Error::InvalidInput(
+                "downloads are limited to a concrete suggested tag. A :latest tag is not downloaded.".into(),
+            ));
+        }
+        let provider = self.provider_config(provider_id)?;
+        if provider.kind != ProviderKind::Ollama || !endpoint_is_local(&provider.endpoint) {
+            return Err(Error::InvalidInput(
+                "a download runs only against the loopback Ollama server".into(),
+            ));
+        }
+        let service = self
+            .this
+            .upgrade()
+            .ok_or_else(|| Error::Other("daemon is stopping".into()))?;
+        {
+            let mut job = lock(&self.pull)?;
+            if job.phase == "running" {
+                return Err(Error::InvalidInput("a download is already running".into()));
+            }
+            job.phase = "running".to_string();
+            job.name = model_name.to_string();
+            job.detail = "Download started.".to_string();
+        }
+        let endpoint = provider.endpoint.clone();
+        let name = model_name.to_string();
+        let http = self.client_for(&provider);
+        let progress = Arc::clone(&service);
+        tokio::spawn(async move {
+            let result = pull_model(&http, &endpoint, &name, |status| {
+                if let Ok(mut job) = progress.pull.lock() {
+                    job.detail = status.to_string();
+                }
+            })
+            .await;
+            finish_pull(&service, result);
+        });
+        self.model_pull_status().await
+    }
+
+    async fn model_pull_status(&self) -> Result<String> {
+        let job = lock(&self.pull)?;
+        Ok(json!({
+            "phase": job.phase,
+            "name": job.name,
+            "detail": job.detail,
+        })
+        .to_string())
     }
 
     async fn system_snapshot(&self) -> Result<String> {
@@ -903,6 +1014,35 @@ fn parse_provider(text: &str) -> Result<ProviderConfig> {
 
 fn to_json<T: Serialize>(value: &T) -> Result<String> {
     serde_json::to_string(value).map_err(|err| Error::Other(err.to_string()))
+}
+
+fn finish_pull(service: &Service, result: Result<()>) {
+    let Ok(mut job) = service.pull.lock() else {
+        return;
+    };
+    match result {
+        Ok(()) => {
+            job.phase = "succeeded".to_string();
+            job.detail = "Download finished.".to_string();
+        }
+        Err(err) => {
+            job.phase = "failed".to_string();
+            job.detail = err.to_string();
+        }
+    }
+}
+
+fn available_ram_mib() -> u64 {
+    let value = lda_system::memory_info();
+    let memory = value.get("memory");
+    let available = memory
+        .and_then(|item| item.get("mem_available_kib"))
+        .and_then(Value::as_u64)
+        .filter(|kib| *kib > 0);
+    let total = memory
+        .and_then(|item| item.get("mem_total_kib"))
+        .and_then(Value::as_u64);
+    available.or(total).unwrap_or(0) / 1024
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> Result<MutexGuard<'_, T>> {

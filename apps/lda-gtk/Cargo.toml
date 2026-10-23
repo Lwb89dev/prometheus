@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 publish.workspace = true
-description = "GTK 4 conversation window for Linux Desktop Agent"
+description = "GTK 4 and libadwaita conversation window for Linux Desktop Agent"
 
 [dependencies]
 lda-common = { workspace = true }
@@ -14,6 +14,7 @@ lda-visual = { workspace = true }
 async-channel = { workspace = true }
 clap = { workspace = true }
 futures-util = { workspace = true }
+adw = { package = "libadwaita", version = "0.9", features = ["v1_5"] }
 gtk = { package = "gtk4", version = "0.11", features = ["v4_14"] }
 pulldown-cmark = { workspace = true }
 serde_json = { workspace = true }

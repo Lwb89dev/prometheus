@@ -6,14 +6,15 @@ mod bus;
 mod markdown;
 mod notes;
 mod settings;
+mod setup;
 mod window;
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
+use adw::prelude::*;
 use clap::Parser;
 use gtk::glib;
-use gtk::prelude::*;
 
 use crate::bus::Launch;
 
@@ -34,10 +35,10 @@ fn main() -> glib::ExitCode {
         config: cli.config,
         data_dir: cli.data_dir,
     });
-    let app = gtk::Application::builder()
+    let app = adw::Application::builder()
         .application_id(lda_common::GTK_APP_ID)
         .build();
-    app.connect_activate(activate);
+    app.connect_activate(|app| activate(app.upcast_ref()));
     let argv = std::env::args().next().unwrap_or_else(|| "lda-gtk".into());
     app.run_with_args(&[&argv])
 }

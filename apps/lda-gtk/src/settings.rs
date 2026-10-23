@@ -1,41 +1,58 @@
 //! Provider editor. Secrets go to the daemon's secret-service call and are not written
 //! into the configuration file. The entry is cleared after a successful hand-off.
+//!
+//! This window is libadwaita. It does not link into the daemon.
 
 use std::rc::Rc;
 
-use gtk::{glib, prelude::*};
+use adw::prelude::*;
+use gtk::glib;
 use lda_common::{ProviderConfig, ProviderKind, ToolCallingMode};
 
 use crate::bus::Command;
 use crate::window::Ctx;
 
 struct Form {
-    root: gtk::Box,
-    id: gtk::Entry,
-    kind: gtk::DropDown,
-    endpoint: gtk::Entry,
-    model: gtk::Entry,
+    group: adw::PreferencesGroup,
+    id: adw::EntryRow,
+    kind: adw::ComboRow,
+    endpoint: adw::EntryRow,
+    model: adw::EntryRow,
     temperature: gtk::SpinButton,
     timeout: gtk::SpinButton,
-    share: gtk::CheckButton,
-    auth_env: gtk::Entry,
-    secret: gtk::PasswordEntry,
+    share: adw::SwitchRow,
+    auth_env: adw::EntryRow,
+    secret: adw::PasswordEntryRow,
     secret_status: gtk::Label,
+}
+
+struct Actions {
+    save: gtk::Button,
+    save_key: gtk::Button,
+    clear_key: gtk::Button,
+    models: gtk::Button,
 }
 
 pub fn open(ctx: &Rc<Ctx>) {
     let provider = current_provider(ctx);
-    let dialog = gtk::Window::builder()
+    let dialog = adw::PreferencesWindow::builder()
         .transient_for(&ctx.widgets.window)
         .modal(true)
-        .title("Provider")
-        .default_width(520)
+        .title("Providers")
+        .default_width(560)
+        .default_height(640)
         .build();
-    let form = build_form(&provider);
-    dialog.set_child(Some(&form.root));
+    let (form, actions) = build_form(&provider);
+    let page = adw::PreferencesPage::new();
+    page.set_title("Provider");
+    page.set_description(
+        "Cloud providers are contacted only after you save one here and send a message to it.",
+    );
+    page.add(&form.group);
+    dialog.add(&page);
     ctx.model.borrow_mut().secret_label = Some(form.secret_status.clone());
     hook_close(ctx, &dialog);
-    hook_buttons(ctx, &form);
+    hook_buttons(ctx, &form, &actions);
     ctx.command(Command::SecretStatus { id: provider.id });
     dialog.present();
 }
@@ -60,44 +77,53 @@ fn default_provider() -> ProviderConfig {
     lda_common::FileConfig::default().providers.remove(0)
 }
 
-fn build_form(provider: &ProviderConfig) -> Form {
-    let root = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    root.set_margin_start(12);
-    root.set_margin_end(12);
-    root.set_margin_top(12);
-    root.set_margin_bottom(12);
-    let grid = gtk::Grid::new();
-    grid.set_column_spacing(8);
-    grid.set_row_spacing(8);
-    let id = entry(&provider.id);
-    let kind = gtk::DropDown::from_strings(&["ollama", "openai_compatible", "anthropic", "xai"]);
-    kind.set_selected(kind_index(provider.kind));
-    let endpoint = entry(&provider.endpoint);
-    let model = entry(&provider.model);
+fn build_form(provider: &ProviderConfig) -> (Form, Actions) {
+    let group = adw::PreferencesGroup::new();
+    group.set_title("Connection");
+    group.set_description(Some(
+        "Loopback providers can use system tools without the switch. For any other endpoint, leave it off unless you want host details to leave this computer. API keys are not saved in the configuration file.",
+    ));
+    let id = adw::EntryRow::builder()
+        .title("Id")
+        .text(&provider.id)
+        .build();
+    let kinds = gtk::StringList::new(&["ollama", "openai_compatible", "anthropic", "xai"]);
+    let kind = adw::ComboRow::builder()
+        .title("Kind")
+        .model(&kinds)
+        .selected(kind_index(provider.kind))
+        .build();
+    let endpoint = adw::EntryRow::builder()
+        .title("Endpoint")
+        .text(&provider.endpoint)
+        .build();
+    let model = adw::EntryRow::builder()
+        .title("Model")
+        .text(&provider.model)
+        .build();
     let temperature = gtk::SpinButton::with_range(0.0, 2.0, 0.1);
     temperature.set_digits(2);
     temperature.set_value(f64::from(provider.temperature.unwrap_or(0.2)));
+    temperature.set_valign(gtk::Align::Center);
+    let temperature_row = adw::ActionRow::builder().title("Temperature").build();
+    temperature_row.add_suffix(&temperature);
     let timeout = gtk::SpinButton::with_range(1.0, 3600.0, 1.0);
     timeout.set_value(provider.timeout_secs as f64);
-    let share = gtk::CheckButton::with_label("Send system tool results to this provider");
-    share.set_active(provider.share_system_context);
-    let auth_env = entry(provider.auth_env.as_deref().unwrap_or(""));
-    let secret = gtk::PasswordEntry::new();
-    secret.set_show_peek_icon(true);
-    let secret_status = gtk::Label::builder().label("Key: …").xalign(0.0).build();
-    attach(&grid, 0, "Id", &id);
-    attach(&grid, 1, "Kind", &kind);
-    attach(&grid, 2, "Endpoint", &endpoint);
-    attach(&grid, 3, "Model", &model);
-    attach(&grid, 4, "Temperature", &temperature);
-    attach(&grid, 5, "Timeout (seconds)", &timeout);
-    attach(&grid, 6, "Auth env var", &auth_env);
-    grid.attach(&share, 0, 7, 2, 1);
-    let note = gtk::Label::builder()
-        .label("Loopback providers can use system tools without the checkbox. For any other endpoint, leave it off unless you want host details to leave this computer. API keys are not saved in the configuration file.")
-        .wrap(true)
-        .xalign(0.0)
+    timeout.set_valign(gtk::Align::Center);
+    let timeout_row = adw::ActionRow::builder().title("Timeout (seconds)").build();
+    timeout_row.add_suffix(&timeout);
+    let share = adw::SwitchRow::builder()
+        .title("Send system tool results to this provider")
+        .active(provider.share_system_context)
         .build();
+    let auth_env = adw::EntryRow::builder()
+        .title("Auth env var")
+        .text(provider.auth_env.as_deref().unwrap_or(""))
+        .build();
+    let secret = adw::PasswordEntryRow::builder().title("API key").build();
+    let secret_status = gtk::Label::builder().label("Key: …").xalign(0.0).build();
+    let status_row = adw::ActionRow::new();
+    status_row.add_suffix(&secret_status);
     let save = gtk::Button::with_label("Save provider");
     let save_key = gtk::Button::with_label("Save key");
     let clear_key = gtk::Button::with_label("Clear key");
@@ -106,46 +132,76 @@ fn build_form(provider: &ProviderConfig) -> Form {
     save_key.set_widget_name("save-key");
     clear_key.set_widget_name("clear-key");
     models.set_widget_name("list-models");
-    let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    buttons.append(&save);
-    buttons.append(&save_key);
-    buttons.append(&clear_key);
-    buttons.append(&models);
-    root.append(&grid);
-    root.append(&note);
-    root.append(&secret);
-    root.append(&secret_status);
-    root.append(&buttons);
-    Form {
-        root,
-        id,
-        kind,
-        endpoint,
-        model,
-        temperature,
-        timeout,
-        share,
-        auth_env,
-        secret,
-        secret_status,
+    for button in [&save, &save_key, &clear_key, &models] {
+        button.set_valign(gtk::Align::Center);
     }
+    let action_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    action_row.set_margin_start(12);
+    action_row.set_margin_end(12);
+    action_row.set_margin_top(6);
+    action_row.set_margin_bottom(6);
+    action_row.append(&save);
+    action_row.append(&save_key);
+    action_row.append(&clear_key);
+    action_row.append(&models);
+    for row in [
+        id.upcast_ref::<gtk::Widget>(),
+        kind.upcast_ref(),
+        endpoint.upcast_ref(),
+        model.upcast_ref(),
+        temperature_row.upcast_ref(),
+        timeout_row.upcast_ref(),
+        share.upcast_ref(),
+        auth_env.upcast_ref(),
+        secret.upcast_ref(),
+        status_row.upcast_ref(),
+        action_row.upcast_ref(),
+    ] {
+        group.add(row);
+    }
+    let actions = Actions {
+        save,
+        save_key,
+        clear_key,
+        models,
+    };
+    (
+        Form {
+            group,
+            id,
+            kind,
+            endpoint,
+            model,
+            temperature,
+            timeout,
+            share,
+            auth_env,
+            secret,
+            secret_status,
+        },
+        actions,
+    )
 }
 
-fn hook_buttons(ctx: &Rc<Ctx>, form: &Form) {
+fn hook_buttons(ctx: &Rc<Ctx>, form: &Form, actions: &Actions) {
     let ctx_save = Rc::clone(ctx);
     let form_save = clone_form(form);
-    named_button(&form.root, "save-provider")
+    actions
+        .save
         .connect_clicked(move |_| save_provider(&ctx_save, &form_save));
     let ctx_key = Rc::clone(ctx);
     let form_key = clone_form(form);
-    named_button(&form.root, "save-key").connect_clicked(move |_| save_key(&ctx_key, &form_key));
+    actions
+        .save_key
+        .connect_clicked(move |_| save_key(&ctx_key, &form_key));
     let ctx_clear = Rc::clone(ctx);
     let form_clear = clone_form(form);
-    named_button(&form.root, "clear-key")
+    actions
+        .clear_key
         .connect_clicked(move |_| clear_key(&ctx_clear, &form_clear));
     let ctx_models = Rc::clone(ctx);
     let form_models = clone_form(form);
-    named_button(&form.root, "list-models").connect_clicked(move |_| {
+    actions.models.connect_clicked(move |_| {
         ctx_models.command(Command::ListModels {
             id: form_models.id.text().to_string(),
         });
@@ -154,7 +210,7 @@ fn hook_buttons(ctx: &Rc<Ctx>, form: &Form) {
 
 fn clone_form(form: &Form) -> Form {
     Form {
-        root: form.root.clone(),
+        group: form.group.clone(),
         id: form.id.clone(),
         kind: form.kind.clone(),
         endpoint: form.endpoint.clone(),
@@ -274,42 +330,10 @@ fn kind_index(kind: ProviderKind) -> u32 {
     }
 }
 
-fn hook_close(ctx: &Rc<Ctx>, dialog: &gtk::Window) {
+fn hook_close(ctx: &Rc<Ctx>, dialog: &adw::PreferencesWindow) {
     let ctx = Rc::clone(ctx);
     dialog.connect_close_request(move |_dialog| {
         ctx.model.borrow_mut().secret_label = None;
         glib::Propagation::Proceed
     });
-}
-
-fn named_button(root: &impl IsA<gtk::Widget>, name: &str) -> gtk::Button {
-    find_button(root.as_ref(), name).unwrap_or_else(|| gtk::Button::with_label(name))
-}
-
-fn find_button(widget: &gtk::Widget, name: &str) -> Option<gtk::Button> {
-    if widget.widget_name() == name {
-        return widget.clone().downcast().ok();
-    }
-    let mut child = widget.first_child();
-    while let Some(current) = child {
-        if let Some(found) = find_button(&current, name) {
-            return Some(found);
-        }
-        child = current.next_sibling();
-    }
-    None
-}
-
-fn attach(grid: &gtk::Grid, row: i32, label: &str, widget: &impl IsA<gtk::Widget>) {
-    let name = gtk::Label::builder()
-        .label(label)
-        .halign(gtk::Align::Start)
-        .build();
-    grid.attach(&name, 0, row, 1, 1);
-    grid.attach(widget, 1, row, 1, 1);
-    widget.set_hexpand(true);
-}
-
-fn entry(text: &str) -> gtk::Entry {
-    gtk::Entry::builder().text(text).hexpand(true).build()
 }

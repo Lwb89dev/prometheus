@@ -33,7 +33,7 @@ Version: ${version}
 Section: utils
 Priority: optional
 Architecture: ${arch}
-Depends: libgtk-4-1, libsqlite3-0
+Depends: libgtk-4-1, libadwaita-1-0, libsqlite3-0
 Maintainer: Linux Desktop Agent <linux-desktop-agent@localhost>
 Description: Local personal assistant for the Linux desktop
  Unprivileged daemon, GTK client, and command line.

@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use futures_util::StreamExt;
 use lda_common::{
-    private_dir, xdg_data_dir, ConversationSummary, MemoryNote, ProviderConfig, SendReply,
-    StoredMessage, StreamEvent,
+    private_dir, xdg_data_dir, ConversationSummary, DiscoveryReport, MemoryNote, ProviderConfig,
+    SendReply, StoredMessage, StreamEvent,
 };
 use lda_ipc::{session_proxy, AgentProxy, BusStreamEvent, StreamDelta, StreamDone};
 
@@ -53,6 +53,14 @@ pub enum Command {
     ListModels {
         id: String,
     },
+    Discover {
+        id: String,
+    },
+    StartPull {
+        id: String,
+        name: String,
+    },
+    PullStatus,
     Shutdown,
     Confirm {
         request_id: String,
@@ -93,6 +101,12 @@ pub enum UiMsg {
     },
     Providers(Vec<ProviderConfig>),
     Models(Vec<String>),
+    Discovery(DiscoveryReport),
+    PullProgress {
+        phase: String,
+        name: String,
+        detail: String,
+    },
     SecretStatus(String),
     Deleted {
         id: String,
@@ -213,6 +227,9 @@ async fn handle_command(proxy: &AgentProxy<'_>, ui: &async_channel::Sender<UiMsg
         }
         Command::SecretStatus { id } => secret_status(proxy, ui, &id).await,
         Command::ListModels { id } => list_models(proxy, ui, &id).await,
+        Command::Discover { id } => discover_models(proxy, ui, &id).await,
+        Command::StartPull { id, name } => start_pull(proxy, ui, &id, &name).await,
+        Command::PullStatus => pull_status(proxy, ui).await,
         Command::Shutdown => {
             let _ = proxy.shutdown().await;
             let _ = ui.send(UiMsg::ShutdownDone).await;
@@ -388,6 +405,80 @@ async fn list_models(proxy: &AgentProxy<'_>, ui: &async_channel::Sender<UiMsg>, 
             let _ = ui.send(UiMsg::Status(err.to_string())).await;
         }
     }
+}
+
+async fn discover_models(proxy: &AgentProxy<'_>, ui: &async_channel::Sender<UiMsg>, id: &str) {
+    let raw = match proxy.discover_models(id).await {
+        Ok(raw) => raw,
+        Err(err) => {
+            let _ = ui.send(UiMsg::Status(err.to_string())).await;
+            return;
+        }
+    };
+    match serde_json::from_str::<DiscoveryReport>(&raw) {
+        Ok(report) => {
+            let _ = ui.send(UiMsg::Discovery(report)).await;
+        }
+        Err(err) => {
+            let _ = ui.send(UiMsg::Status(err.to_string())).await;
+        }
+    }
+}
+
+async fn start_pull(
+    proxy: &AgentProxy<'_>,
+    ui: &async_channel::Sender<UiMsg>,
+    id: &str,
+    name: &str,
+) {
+    match proxy.start_model_pull(id, name).await {
+        Ok(raw) => forward_pull(ui, &raw).await,
+        Err(err) => {
+            let _ = ui.send(UiMsg::Status(err.to_string())).await;
+        }
+    }
+}
+
+async fn pull_status(proxy: &AgentProxy<'_>, ui: &async_channel::Sender<UiMsg>) {
+    match proxy.model_pull_status().await {
+        Ok(raw) => forward_pull(ui, &raw).await,
+        Err(err) => {
+            let _ = ui.send(UiMsg::Status(err.to_string())).await;
+        }
+    }
+}
+
+async fn forward_pull(ui: &async_channel::Sender<UiMsg>, raw: &str) {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
+        let _ = ui
+            .send(UiMsg::Status(
+                "The download status was not readable.".into(),
+            ))
+            .await;
+        return;
+    };
+    let phase = value
+        .get("phase")
+        .and_then(|item| item.as_str())
+        .unwrap_or("")
+        .to_string();
+    let name = value
+        .get("name")
+        .and_then(|item| item.as_str())
+        .unwrap_or("")
+        .to_string();
+    let detail = value
+        .get("detail")
+        .and_then(|item| item.as_str())
+        .unwrap_or("")
+        .to_string();
+    let _ = ui
+        .send(UiMsg::PullProgress {
+            phase,
+            name,
+            detail,
+        })
+        .await;
 }
 
 async fn secret_status(proxy: &AgentProxy<'_>, ui: &async_channel::Sender<UiMsg>, id: &str) {

@@ -18,6 +18,7 @@ mod provider;
 pub mod scripted;
 
 pub use delta::{push_lines, LlmDelta, ToolCallBuffer};
+pub use ollama::{apply_show, models_from_tags, pull_model, OllamaProvider};
 pub use provider::{
     build_provider, ChatRequest, LlmProvider, ProviderCapabilities, ToolDefinition,
 };

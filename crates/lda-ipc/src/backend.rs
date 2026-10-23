@@ -41,6 +41,12 @@ pub trait AgentBackend: Send + Sync {
 
     async fn list_models(&self, provider_id: &str) -> Result<String>;
 
+    async fn discover_models(&self, provider_id: &str) -> Result<String>;
+
+    async fn start_model_pull(&self, provider_id: &str, model_name: &str) -> Result<String>;
+
+    async fn model_pull_status(&self) -> Result<String>;
+
     async fn system_snapshot(&self) -> Result<String>;
 
     async fn reload_config(&self) -> Result<()>;

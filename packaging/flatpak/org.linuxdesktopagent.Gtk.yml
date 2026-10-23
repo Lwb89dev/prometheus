@@ -5,6 +5,7 @@
 app-id: org.linuxdesktopagent.Gtk
 runtime: org.gnome.Platform
 runtime-version: "47"
+# org.gnome.Platform 47 already ships libadwaita, so the manifest adds no extra GNOME library.
 sdk: org.gnome.Sdk
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable

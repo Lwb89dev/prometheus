@@ -10,6 +10,7 @@ pub mod endpoint;
 pub mod error;
 pub mod ids;
 pub mod message;
+pub mod models;
 pub mod paths;
 pub mod permission;
 
@@ -23,6 +24,10 @@ pub use ids::{new_id, now_ms, title_from};
 pub use message::{
     ConversationSummary, MemoryNote, Message, Role, SendReply, SourceLink, StoredMessage,
     StreamEvent, ToolCall, ToolRunRecord,
+};
+pub use models::{
+    is_catalog_model, model_is_unset, rank_installed, suggest_for_ram, DiscoveryReport,
+    InstalledModel, ModelSuggestion,
 };
 pub use paths::{private_dir, read_to_string_limited, tighten_file, xdg_config_dir, xdg_data_dir};
 pub use permission::{ConfirmationPolicy, PermissionLevel, Risk};

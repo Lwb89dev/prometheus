@@ -4,16 +4,17 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
+use adw::prelude::*;
 use gtk::accessible::Property;
-use gtk::{glib, prelude::*};
-use lda_common::{ConversationSummary, ProviderConfig, SourceLink, StreamEvent};
+use gtk::glib;
+use lda_common::{ConversationSummary, ProviderConfig, ProviderKind, SourceLink, StreamEvent};
 use lda_visual::{Connection, DaemonVisualEvent, EntityCallbacks, EntityEvent, EntityWidget};
 
 use crate::bus::{Command, UiMsg};
 use crate::markdown::render_transcript;
 
 pub struct Widgets {
-    pub window: gtk::ApplicationWindow,
+    pub window: adw::ApplicationWindow,
     pub entity_window: gtk::ApplicationWindow,
     pub entity: EntityWidget,
     pub providers: gtk::DropDown,
@@ -37,6 +38,10 @@ pub struct Model {
     pub pending: Vec<Pending>,
     pub secret_label: Option<gtk::Label>,
     pub notes_list: Option<gtk::ListBox>,
+    pub installed_list: Option<gtk::ListBox>,
+    pub suggestion_list: Option<gtk::ListBox>,
+    pub setup_notice: Option<gtk::Label>,
+    pub setup_dialog: Option<adw::Dialog>,
 }
 
 pub enum Pending {
@@ -85,6 +90,10 @@ pub fn build(app: &gtk::Application, cmd: async_channel::Sender<Command>) -> Rc<
             pending: Vec::new(),
             secret_label: None,
             notes_list: None,
+            installed_list: None,
+            suggestion_list: None,
+            setup_notice: None,
+            setup_dialog: None,
         }),
     });
     hook_actions(&ctx);
@@ -104,18 +113,19 @@ pub fn bind_events(ctx: Rc<Ctx>, rx: async_channel::Receiver<UiMsg>) {
 }
 
 fn build_widgets(app: &gtk::Application) -> Widgets {
-    let window = gtk::ApplicationWindow::builder()
+    let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("Linux Desktop Agent")
         .default_width(980)
         .default_height(680)
         .build();
-    let header = gtk::HeaderBar::new();
+    let header = adw::HeaderBar::new();
     let new_button = named_button("New", "new");
     let delete_button = named_button("Delete", "delete");
     let stop_button = named_button("Stop", "stop");
     let copy_button = named_button("Copy", "copy");
-    let settings_button = named_button("Settings", "settings");
+    let settings_button = named_button("Providers", "settings");
+    let models_button = named_button("Models", "models");
     let notes_button = named_button("Notes", "notes");
     let widget_button = named_button("Widget", "widget");
     let quit_daemon = named_button("Quit daemon", "quit-daemon");
@@ -125,12 +135,14 @@ fn build_widgets(app: &gtk::Application) -> Widgets {
     header.pack_start(&delete_button);
     header.pack_end(&quit_daemon);
     header.pack_end(&settings_button);
+    header.pack_end(&models_button);
     header.pack_end(&notes_button);
     header.pack_end(&widget_button);
     header.pack_end(&copy_button);
     header.pack_end(&stop_button);
     header.pack_end(&providers);
-    window.set_titlebar(Some(&header));
+    let toolbar = adw::ToolbarView::new();
+    toolbar.add_top_bar(&header);
 
     let search = gtk::SearchEntry::builder()
         .placeholder_text("Search conversations")
@@ -203,7 +215,8 @@ fn build_widgets(app: &gtk::Application) -> Widgets {
     paned.set_resize_start_child(false);
     paned.set_shrink_start_child(false);
     paned.set_position(260);
-    window.set_child(Some(&paned));
+    toolbar.set_content(Some(&paned));
+    window.set_content(Some(&toolbar));
 
     let entity = EntityWidget::new(176);
     let entity_window = gtk::ApplicationWindow::builder()
@@ -240,10 +253,11 @@ fn hook_actions(ctx: &Rc<Ctx>) {
     connect_clicked(ctx, "stop", |ctx| stop(ctx));
     connect_clicked(ctx, "copy", |ctx| copy_transcript(&ctx.widgets.transcript));
     connect_clicked(ctx, "settings", crate::settings::open);
+    connect_clicked(ctx, "models", crate::setup::open);
     connect_clicked(ctx, "notes", crate::notes::open);
     connect_clicked(ctx, "widget", toggle_entity);
     connect_clicked(ctx, "quit-daemon", confirm_quit_daemon);
-    connect_clicked(ctx, "send", |ctx| send(ctx));
+    connect_clicked(ctx, "send", send);
     hook_input(ctx);
     hook_search(ctx);
     hook_rows(ctx);
@@ -253,9 +267,9 @@ fn hook_actions(ctx: &Rc<Ctx>) {
 
 fn connect_clicked(ctx: &Rc<Ctx>, name: &str, action: fn(&Rc<Ctx>)) {
     let window = &ctx.widgets.window;
-    let from_title = window.titlebar().and_then(|bar| find_named(&bar, name));
+    let from_content = window.content().and_then(|child| find_named(&child, name));
     let from_child = window.child().and_then(|child| find_named(&child, name));
-    let Some(button) = from_title.or(from_child) else {
+    let Some(button) = from_content.or(from_child) else {
         return;
     };
     let ctx = Rc::clone(ctx);
@@ -286,7 +300,7 @@ fn hook_input(ctx: &Rc<Ctx>) {
 }
 
 fn on_input_key(
-    ctx: &Ctx,
+    ctx: &Rc<Ctx>,
     key: gtk::gdk::Key,
     modifiers: gtk::gdk::ModifierType,
 ) -> glib::Propagation {
@@ -456,9 +470,14 @@ fn new_conversation(ctx: &Ctx) {
     set_status(&ctx.widgets, "New conversation.");
 }
 
-fn send(ctx: &Ctx) {
+fn send(ctx: &Rc<Ctx>) {
     if ctx.model.borrow().busy {
         set_status(&ctx.widgets, "A reply is still running.");
+        return;
+    }
+    if provider_needs_model(ctx) {
+        set_status(&ctx.widgets, "Choose a local model first.");
+        crate::setup::open(ctx);
         return;
     }
     let text = buffer_text(&ctx.widgets.input.buffer());
@@ -555,7 +574,7 @@ fn confirm(ctx: &Rc<Ctx>, message: &str, detail: &str, action: impl FnOnce(&Ctx)
     );
 }
 
-fn on_ui(ctx: &Ctx, msg: UiMsg) {
+fn on_ui(ctx: &Rc<Ctx>, msg: UiMsg) {
     match msg {
         UiMsg::Connected => on_connected(ctx),
         UiMsg::Status(text) => {
@@ -585,6 +604,12 @@ fn on_ui(ctx: &Ctx, msg: UiMsg) {
         } => show_messages(ctx, &conversation_id, &messages),
         UiMsg::Providers(providers) => on_providers(ctx, providers),
         UiMsg::Models(models) => on_models(ctx, &models),
+        UiMsg::Discovery(report) => crate::setup::show(ctx, &report),
+        UiMsg::PullProgress {
+            phase,
+            name,
+            detail,
+        } => crate::setup::pull_progress(ctx, &phase, &name, &detail),
         UiMsg::SecretStatus(status) => on_secret_status(ctx, &status),
         UiMsg::Deleted { id } => on_deleted(ctx, &id),
         UiMsg::DeletedAll => on_deleted_all(ctx),
@@ -804,7 +829,7 @@ fn show_messages(ctx: &Ctx, conversation_id: &str, messages: &[lda_common::Store
     scroll_to_end(&ctx.widgets.transcript);
 }
 
-fn on_providers(ctx: &Ctx, providers: Vec<ProviderConfig>) {
+fn on_providers(ctx: &Rc<Ctx>, providers: Vec<ProviderConfig>) {
     let current = ctx.model.borrow().provider_id.clone();
     let ids: Vec<String> = providers
         .iter()
@@ -816,9 +841,31 @@ fn on_providers(ctx: &Ctx, providers: Vec<ProviderConfig>) {
         ids.first().cloned().unwrap_or_default()
     };
     set_provider_list(&ctx.widgets.providers, &ids, &keep);
+    let needs_model = providers.iter().any(|provider| {
+        provider.id == keep
+            && provider.kind == ProviderKind::Ollama
+            && provider.model.trim().is_empty()
+    });
     let mut model = ctx.model.borrow_mut();
     model.providers = providers;
     model.provider_id = keep;
+    drop(model);
+    if needs_model {
+        set_status(
+            &ctx.widgets,
+            "Choose a local model. Nothing is downloaded until you approve a tag.",
+        );
+        crate::setup::open(ctx);
+    }
+}
+
+fn provider_needs_model(ctx: &Ctx) -> bool {
+    let model = ctx.model.borrow();
+    model.providers.iter().any(|provider| {
+        provider.id == model.provider_id
+            && provider.kind == ProviderKind::Ollama
+            && provider.model.trim().is_empty()
+    })
 }
 
 fn on_models(ctx: &Ctx, models: &[String]) {

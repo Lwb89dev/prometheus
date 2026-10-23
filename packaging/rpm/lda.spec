@@ -10,9 +10,11 @@ URL:            https://github.com/Lwb89dev/prometheus
 BuildRequires:  cargo
 BuildRequires:  rust
 BuildRequires:  gtk4-devel
+BuildRequires:  libadwaita-devel
 BuildRequires:  sqlite-devel
 BuildRequires:  pkgconfig
 Requires:       gtk4
+Requires:       libadwaita
 Requires:       sqlite-libs
 
 %description
